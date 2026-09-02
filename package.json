@@ -1,0 +1,21 @@
+{
+  "name": "continuity-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local MCP state machine for a scoped, reviewed agent workflow.",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "npm run build && node --test dist/*.test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}
