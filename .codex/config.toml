@@ -1,0 +1,5 @@
+[mcp_servers.continuity]
+command = "node"
+args = ["D:/harness_agent/dist/index.js"]
+cwd = "D:/harness_agent"
+env = { CONTINUITY_STATE_PATH = "D:/harness_agent/.continuity/state.json", CONTINUITY_PROJECT_ID = "harness-agent" }
