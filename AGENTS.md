@@ -10,4 +10,10 @@ This repository uses a small reviewed workflow:
 
 `check_scope` is an advisory keyword-based guardrail, not an authorization system. Human review remains required for security-sensitive or destructive work.
 
+## Task workspace conventions
+
+- `tasks/active/`: Stores active work orders and in-progress task specifications.
+- `tasks/archive/`: Stores summaries/records of reviewed and accepted tasks.
+- In-progress work orders must remain in `tasks/active/` until formally accepted/reviewed by the Manager before moving or summarizing into `tasks/archive/`.
+
 For compact shell output, use `rtk` commands when RTK is installed. Do not hide failures: consult the full output file when RTK reports one.
