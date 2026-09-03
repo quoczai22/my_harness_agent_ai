@@ -6,16 +6,24 @@
   "description": "Local MCP state machine for a scoped, reviewed agent workflow.",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build:server": "tsc",
+    "build:ui": "esbuild src/ui/index.tsx --bundle --minify --format=iife --outfile=dist/public/bundle.js",
+    "build": "tsc && npm run build:ui",
     "start": "node dist/index.js",
+    "dashboard": "npm run build && node dist/dashboard.js",
     "test": "npm run build && node --test dist/*.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "zod": "^3.23.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "esbuild": "^0.28.2",
     "typescript": "^5.5.0"
   }
 }
