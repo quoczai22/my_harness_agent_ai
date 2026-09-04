@@ -11,6 +11,20 @@ export interface RegisteredWorkspace {
   port?: number;
 }
 
+export interface TimelineEvent {
+  id: string;
+  type:
+    | "CHECKPOINT_REQUESTED"
+    | "CHECKPOINT_DECIDED"
+    | "DECISION"
+    | "STAGE_CHANGE";
+  timestamp: string;
+  title: string;
+  description: string;
+  actor?: string;
+  badgeVariant: "purple" | "blue" | "green" | "amber" | "rose";
+}
+
 export interface WorkspaceSummary {
   id: string;
   name: string;
@@ -24,8 +38,8 @@ export interface WorkspaceSummary {
   tasksCount?: number;
   blockersCount?: number;
   gitClean?: boolean;
+  recentActivity?: string;
 }
-
 
 export interface DashboardOptions {
   workspaceRoot?: string;
@@ -35,7 +49,10 @@ export interface DashboardOptions {
 
 const ALLOWLISTED_PREFIXES = ["openspec", "reports", "tasks", ".continuity"];
 
-export function isPathContained(workspaceRoot: string, targetPath: string): boolean {
+export function isPathContained(
+  workspaceRoot: string,
+  targetPath: string,
+): boolean {
   const root = resolve(workspaceRoot);
   const target = resolve(targetPath);
   if (root === target) return true;
@@ -43,34 +60,46 @@ export function isPathContained(workspaceRoot: string, targetPath: string): bool
   return Boolean(rel && !rel.startsWith("..") && !isAbsolute(rel));
 }
 
-export function isAllowlistedArtifact(workspaceRoot: string, targetPath: string): boolean {
+export function isAllowlistedArtifact(
+  workspaceRoot: string,
+  targetPath: string,
+): boolean {
   if (!isPathContained(workspaceRoot, targetPath)) return false;
-  const rel = relative(resolve(workspaceRoot), resolve(targetPath)).replace(/\\/g, "/");
-  return ALLOWLISTED_PREFIXES.some(prefix => rel === prefix || rel.startsWith(prefix + "/"));
+  const rel = relative(resolve(workspaceRoot), resolve(targetPath)).replace(
+    /\\/g,
+    "/",
+  );
+  return ALLOWLISTED_PREFIXES.some(
+    (prefix) => rel === prefix || rel.startsWith(prefix + "/"),
+  );
 }
 
-export function getGitSummary(workspaceRoot: string): { branch: string; clean: boolean; modifiedFiles: string[] } {
+export function getGitSummary(workspaceRoot: string): {
+  branch: string;
+  clean: boolean;
+  modifiedFiles: string[];
+} {
   try {
     const branch = execSync("git branch --show-current", {
       cwd: workspaceRoot,
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"]
+      stdio: ["ignore", "pipe", "ignore"],
     }).trim();
     const statusOut = execSync("git status --porcelain", {
       cwd: workspaceRoot,
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"]
+      stdio: ["ignore", "pipe", "ignore"],
     }).trim();
     const modifiedFiles = statusOut
       ? statusOut
           .split("\n")
-          .map(line => line.trim())
+          .map((line) => line.trim())
           .filter(Boolean)
       : [];
     return {
       branch: branch || "main",
       clean: modifiedFiles.length === 0,
-      modifiedFiles
+      modifiedFiles,
     };
   } catch {
     return { branch: "unknown", clean: true, modifiedFiles: [] };
@@ -104,15 +133,25 @@ export function getAllowlistedArtifactsList(workspaceRoot: string): string[] {
   return results;
 }
 
-export function validateWorkspaceRegistryData(raw: any, sourcePath = "registry", defaultPort = 3456): RegisteredWorkspace[] {
+export function validateWorkspaceRegistryData(
+  raw: any,
+  sourcePath = "registry",
+  defaultPort = 3456,
+): RegisteredWorkspace[] {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error(`Invalid registry format in ${sourcePath}: Root must be an object.`);
+    throw new Error(
+      `Invalid registry format in ${sourcePath}: Root must be an object.`,
+    );
   }
   if (!Array.isArray(raw.workspaces)) {
-    throw new Error(`Invalid registry format in ${sourcePath}: Missing "workspaces" array.`);
+    throw new Error(
+      `Invalid registry format in ${sourcePath}: Missing "workspaces" array.`,
+    );
   }
   if (raw.workspaces.length === 0) {
-    throw new Error(`Invalid registry format in ${sourcePath}: "workspaces" array cannot be empty.`);
+    throw new Error(
+      `Invalid registry format in ${sourcePath}: "workspaces" array cannot be empty.`,
+    );
   }
 
   const seenIds = new Set<string>();
@@ -122,37 +161,56 @@ export function validateWorkspaceRegistryData(raw: any, sourcePath = "registry",
   for (let i = 0; i < raw.workspaces.length; i++) {
     const entry = raw.workspaces[i];
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-      throw new Error(`Invalid workspace entry at index ${i} in ${sourcePath}: Entry must be an object.`);
+      throw new Error(
+        `Invalid workspace entry at index ${i} in ${sourcePath}: Entry must be an object.`,
+      );
     }
 
     const id = typeof entry.id === "string" ? entry.id.trim() : "";
     if (!id) {
-      throw new Error(`Invalid workspace entry at index ${i} in ${sourcePath}: "id" must be a non-empty string.`);
+      throw new Error(
+        `Invalid workspace entry at index ${i} in ${sourcePath}: "id" must be a non-empty string.`,
+      );
     }
     if (seenIds.has(id)) {
-      throw new Error(`Duplicate workspace id "${id}" found at index ${i} in ${sourcePath}.`);
+      throw new Error(
+        `Duplicate workspace id "${id}" found at index ${i} in ${sourcePath}.`,
+      );
     }
     seenIds.add(id);
 
     const name = typeof entry.name === "string" ? entry.name.trim() : "";
     if (!name) {
-      throw new Error(`Invalid workspace entry "${id}" in ${sourcePath}: "name" must be a non-empty string.`);
+      throw new Error(
+        `Invalid workspace entry "${id}" in ${sourcePath}: "name" must be a non-empty string.`,
+      );
     }
 
     const rawPath = typeof entry.path === "string" ? entry.path.trim() : "";
     if (!rawPath) {
-      throw new Error(`Invalid workspace entry "${id}" in ${sourcePath}: "path" must be a non-empty string.`);
+      throw new Error(
+        `Invalid workspace entry "${id}" in ${sourcePath}: "path" must be a non-empty string.`,
+      );
     }
     const canonicalPath = resolve(rawPath);
     if (seenPaths.has(canonicalPath)) {
-      throw new Error(`Duplicate workspace path "${canonicalPath}" found for entry "${id}" in ${sourcePath}.`);
+      throw new Error(
+        `Duplicate workspace path "${canonicalPath}" found for entry "${id}" in ${sourcePath}.`,
+      );
     }
     seenPaths.add(canonicalPath);
 
     let port = defaultPort;
     if (entry.port !== undefined) {
-      if (typeof entry.port !== "number" || !Number.isSafeInteger(entry.port) || entry.port < 0 || entry.port > 65535) {
-        throw new Error(`Invalid port for workspace "${id}" in ${sourcePath}: ${entry.port}. Port must be an integer between 0 and 65535.`);
+      if (
+        typeof entry.port !== "number" ||
+        !Number.isSafeInteger(entry.port) ||
+        entry.port < 0 ||
+        entry.port > 65535
+      ) {
+        throw new Error(
+          `Invalid port for workspace "${id}" in ${sourcePath}: ${entry.port}. Port must be an integer between 0 and 65535.`,
+        );
       }
       port = entry.port;
     }
@@ -161,7 +219,7 @@ export function validateWorkspaceRegistryData(raw: any, sourcePath = "registry",
       id,
       name,
       path: canonicalPath,
-      port
+      port,
     });
   }
 
@@ -172,13 +230,15 @@ export function loadWorkspaceRegistry(
   registryPath: string,
   defaultWorkspaceRoot: string,
   defaultPort = 3456,
-  isExplicit = false
+  isExplicit = false,
 ): RegisteredWorkspace[] {
   const resolvedRegistryPath = resolve(registryPath);
   if (existsSync(resolvedRegistryPath)) {
     try {
       if (statSync(resolvedRegistryPath).isDirectory()) {
-        throw new Error(`Registry path is a directory, expected a JSON file: ${resolvedRegistryPath}`);
+        throw new Error(
+          `Registry path is a directory, expected a JSON file: ${resolvedRegistryPath}`,
+        );
       }
     } catch (err: any) {
       if (err.message.includes("is a directory")) throw err;
@@ -188,9 +248,15 @@ export function loadWorkspaceRegistry(
       const text = readFileSync(resolvedRegistryPath, "utf8");
       rawJson = JSON.parse(text);
     } catch (err: any) {
-      throw new Error(`Invalid JSON syntax in registry file "${resolvedRegistryPath}": ${err?.message || err}`);
+      throw new Error(
+        `Invalid JSON syntax in registry file "${resolvedRegistryPath}": ${err?.message || err}`,
+      );
     }
-    return validateWorkspaceRegistryData(rawJson, resolvedRegistryPath, defaultPort);
+    return validateWorkspaceRegistryData(
+      rawJson,
+      resolvedRegistryPath,
+      defaultPort,
+    );
   }
 
   if (isExplicit) {
@@ -202,17 +268,21 @@ export function loadWorkspaceRegistry(
       id: "default",
       name: "Default Workspace",
       path: resolve(defaultWorkspaceRoot),
-      port: defaultPort
-    }
+      port: defaultPort,
+    },
   ];
 }
 
-
 export async function probeWorkspaceInstanceHealth(
   port?: number,
-  timeoutMs = 800
+  timeoutMs = 800,
 ): Promise<"ONLINE" | "OFFLINE" | "UNKNOWN"> {
-  if (typeof port !== "number" || !Number.isSafeInteger(port) || port <= 0 || port > 65535) {
+  if (
+    typeof port !== "number" ||
+    !Number.isSafeInteger(port) ||
+    port <= 0 ||
+    port > 65535
+  ) {
     return "UNKNOWN";
   }
   const controller = new AbortController();
@@ -220,7 +290,7 @@ export async function probeWorkspaceInstanceHealth(
   try {
     const res = await fetch(`http://127.0.0.1:${port}/api/health`, {
       signal: controller.signal,
-      headers: { "Accept": "application/json" }
+      headers: { Accept: "application/json" },
     });
     if (res.ok) {
       const data = await res.json();
@@ -236,7 +306,85 @@ export async function probeWorkspaceInstanceHealth(
   }
 }
 
-export async function getWorkspacesSummaryList(registry: RegisteredWorkspace[]): Promise<WorkspaceSummary[]> {
+export function extractWorkflowTimeline(
+  state: any,
+  limit = 20,
+): TimelineEvent[] {
+  if (!state || typeof state !== "object") {
+    return [];
+  }
+
+  const events: TimelineEvent[] = [];
+
+  // 1. Checkpoint events
+  if (Array.isArray(state.checkpoints)) {
+    for (const cp of state.checkpoints) {
+      if (!cp || typeof cp !== "object") continue;
+      const cpId = String(cp.id || "");
+      const cpType = String(cp.type || "checkpoint");
+      const changeId = cp.changeId ? ` [${cp.changeId}]` : "";
+
+      if (cp.createdAt) {
+        events.push({
+          id: `${cpId}-req`,
+          type: "CHECKPOINT_REQUESTED",
+          timestamp: cp.createdAt,
+          title: `Checkpoint Requested: ${cpType}${changeId}`,
+          description: cp.payload || "No review payload provided",
+          badgeVariant: "amber",
+        });
+      }
+
+      if (cp.decidedAt) {
+        const isApproved = cp.status === "APPROVED";
+        events.push({
+          id: `${cpId}-dec`,
+          type: "CHECKPOINT_DECIDED",
+          timestamp: cp.decidedAt,
+          title: `Checkpoint ${cp.status || "DECIDED"}: ${cpType}${changeId}`,
+          description:
+            cp.reasoning ||
+            (isApproved ? "Approved by reviewer" : "Rejected by reviewer"),
+          badgeVariant: isApproved ? "green" : "rose",
+        });
+      }
+    }
+  }
+
+  // 2. Decisions
+  if (Array.isArray(state.decisions)) {
+    for (let i = 0; i < state.decisions.length; i++) {
+      const d = state.decisions[i];
+      if (!d || typeof d !== "object") continue;
+      events.push({
+        id: `dec-${d.timestamp || i}-${i}`,
+        type: "DECISION",
+        timestamp: d.timestamp || new Date(0).toISOString(),
+        title: d.decision || "Workflow Decision Logged",
+        description: d.reasoning || "",
+        actor: d.actor || "developer",
+        badgeVariant: "blue",
+      });
+    }
+  }
+
+  // 3. Deterministic descending sort by timestamp (newest first), tie-breaking on id
+  events.sort((a, b) => {
+    const timeA = Date.parse(a.timestamp) || 0;
+    const timeB = Date.parse(b.timestamp) || 0;
+    if (timeB !== timeA) {
+      return timeB - timeA;
+    }
+    return a.id.localeCompare(b.id);
+  });
+
+  const clampedLimit = Math.min(Math.max(1, limit), 50);
+  return events.slice(0, clampedLimit);
+}
+
+export async function getWorkspacesSummaryList(
+  registry: RegisteredWorkspace[],
+): Promise<WorkspaceSummary[]> {
   const promises = registry.map(async (w): Promise<WorkspaceSummary> => {
     const canonicalPath = resolve(w.path);
     if (!existsSync(canonicalPath)) {
@@ -247,7 +395,7 @@ export async function getWorkspacesSummaryList(registry: RegisteredWorkspace[]):
         port: w.port,
         status: "UNAVAILABLE",
         instanceHealth: "UNKNOWN",
-        error: "Workspace directory does not exist"
+        error: "Workspace directory does not exist",
       };
     }
     try {
@@ -259,7 +407,7 @@ export async function getWorkspacesSummaryList(registry: RegisteredWorkspace[]):
           port: w.port,
           status: "UNAVAILABLE",
           instanceHealth: "UNKNOWN",
-          error: "Workspace path is not a directory"
+          error: "Workspace path is not a directory",
         };
       }
     } catch {
@@ -270,7 +418,7 @@ export async function getWorkspacesSummaryList(registry: RegisteredWorkspace[]):
         port: w.port,
         status: "UNAVAILABLE",
         instanceHealth: "UNKNOWN",
-        error: "Cannot access workspace directory"
+        error: "Cannot access workspace directory",
       };
     }
 
@@ -278,6 +426,7 @@ export async function getWorkspacesSummaryList(registry: RegisteredWorkspace[]):
     let currentChangeId: string | null = null;
     let tasksCount = 0;
     let blockersCount = 0;
+    let recentActivity = "No recent activity";
     const statePath = join(canonicalPath, ".continuity", "state.json");
     if (isPathContained(canonicalPath, statePath) && existsSync(statePath)) {
       try {
@@ -285,7 +434,13 @@ export async function getWorkspacesSummaryList(registry: RegisteredWorkspace[]):
         stage = state.stage || "IDLE";
         currentChangeId = state.currentChangeId || null;
         tasksCount = Array.isArray(state.tasks) ? state.tasks.length : 0;
-        blockersCount = Array.isArray(state.blockers) ? state.blockers.length : 0;
+        blockersCount = Array.isArray(state.blockers)
+          ? state.blockers.length
+          : 0;
+        const timeline = extractWorkflowTimeline(state, 1);
+        if (timeline.length > 0) {
+          recentActivity = timeline[0].title;
+        }
       } catch {}
     }
 
@@ -303,13 +458,13 @@ export async function getWorkspacesSummaryList(registry: RegisteredWorkspace[]):
       currentChangeId,
       tasksCount,
       blockersCount,
-      gitClean: git.clean
+      gitClean: git.clean,
+      recentActivity,
     };
   });
 
   return Promise.all(promises);
 }
-
 
 export function getDashboardHtml(): string {
   return `<!DOCTYPE html>
@@ -461,11 +616,15 @@ export function getDashboardHtml(): string {
 function parsePortValue(val: string, flag: string): number {
   const trimmed = val.trim();
   if (!trimmed || !/^\d+$/.test(trimmed)) {
-    throw new Error(`Invalid port value for ${flag}: "${val}". Port must be a valid integer between 0 and 65535.`);
+    throw new Error(
+      `Invalid port value for ${flag}: "${val}". Port must be a valid integer between 0 and 65535.`,
+    );
   }
   const num = Number(trimmed);
   if (!Number.isSafeInteger(num) || num < 0 || num > 65535) {
-    throw new Error(`Invalid port number for ${flag}: ${num}. Port must be between 0 and 65535.`);
+    throw new Error(
+      `Invalid port number for ${flag}: ${num}. Port must be between 0 and 65535.`,
+    );
   }
   return num;
 }
@@ -545,7 +704,10 @@ export function parseDashboardCliArgs(args: string[]): DashboardOptions {
 }
 
 export function createDashboardServer(options: DashboardOptions = {}) {
-  const rawWorkspace = options.workspaceRoot ?? process.env.CONTINUITY_WORKSPACE_PATH ?? process.cwd();
+  const rawWorkspace =
+    options.workspaceRoot ??
+    process.env.CONTINUITY_WORKSPACE_PATH ??
+    process.cwd();
   const workspaceRoot = resolve(rawWorkspace);
 
   if (!existsSync(workspaceRoot)) {
@@ -562,8 +724,15 @@ export function createDashboardServer(options: DashboardOptions = {}) {
 
   let port: number;
   if (options.port !== undefined) {
-    if (typeof options.port !== "number" || !Number.isSafeInteger(options.port) || options.port < 0 || options.port > 65535) {
-      throw new Error(`Invalid port: ${options.port}. Port must be an integer between 0 and 65535.`);
+    if (
+      typeof options.port !== "number" ||
+      !Number.isSafeInteger(options.port) ||
+      options.port < 0 ||
+      options.port > 65535
+    ) {
+      throw new Error(
+        `Invalid port: ${options.port}. Port must be an integer between 0 and 65535.`,
+      );
     }
     port = options.port;
   } else if (process.env.PORT !== undefined) {
@@ -571,17 +740,31 @@ export function createDashboardServer(options: DashboardOptions = {}) {
   } else {
     port = 3456;
   }
-  const statePath = resolve(workspaceRoot, process.env.CONTINUITY_STATE_PATH ?? ".continuity/state.json");
-  const isExplicitRegistry = Boolean(options.registryPath ?? process.env.CONTINUITY_REGISTRY_PATH);
-  const rawRegistryPath = options.registryPath ?? process.env.CONTINUITY_REGISTRY_PATH ?? join(workspaceRoot, ".continuity", "workspaces.json");
-  const registry = loadWorkspaceRegistry(rawRegistryPath, workspaceRoot, port, isExplicitRegistry);
+  const statePath = resolve(
+    workspaceRoot,
+    process.env.CONTINUITY_STATE_PATH ?? ".continuity/state.json",
+  );
+  const isExplicitRegistry = Boolean(
+    options.registryPath ?? process.env.CONTINUITY_REGISTRY_PATH,
+  );
+  const rawRegistryPath =
+    options.registryPath ??
+    process.env.CONTINUITY_REGISTRY_PATH ??
+    join(workspaceRoot, ".continuity", "workspaces.json");
+  const registry = loadWorkspaceRegistry(
+    rawRegistryPath,
+    workspaceRoot,
+    port,
+    isExplicitRegistry,
+  );
 
-
-  const getTargetWorkspace = (workspaceId?: string | null): { root: string; summary?: RegisteredWorkspace } => {
+  const getTargetWorkspace = (
+    workspaceId?: string | null,
+  ): { root: string; summary?: RegisteredWorkspace } => {
     if (!workspaceId) {
       return { root: workspaceRoot };
     }
-    const match = registry.find(w => w.id === workspaceId);
+    const match = registry.find((w) => w.id === workspaceId);
     if (!match) {
       throw new Error("UNREGISTERED");
     }
@@ -592,46 +775,178 @@ export function createDashboardServer(options: DashboardOptions = {}) {
     return { root: canonicalRoot, summary: match };
   };
 
-  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-    const parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
-    const pathname = parsedUrl.pathname;
+  const server = createServer(
+    async (req: IncomingMessage, res: ServerResponse) => {
+      const parsedUrl = new URL(
+        req.url ?? "/",
+        `http://${req.headers.host ?? "localhost"}`,
+      );
+      const pathname = parsedUrl.pathname;
 
-    // Helper to send JSON without wildcard CORS
-    const sendJson = (data: unknown, status = 200) => {
-      res.writeHead(status, {
-        "Content-Type": "application/json; charset=utf-8"
-      });
-      res.end(JSON.stringify(data, null, 2));
-    };
+      // Helper to send JSON without wildcard CORS
+      const sendJson = (data: unknown, status = 200) => {
+        res.writeHead(status, {
+          "Content-Type": "application/json; charset=utf-8",
+        });
+        res.end(JSON.stringify(data, null, 2));
+      };
 
-    // Helper to send text/html/js without wildcard CORS
-    const sendContent = (content: string | Buffer, status = 200, contentType = "text/html; charset=utf-8") => {
-      res.writeHead(status, {
-        "Content-Type": contentType
-      });
-      res.end(content);
-    };
+      // Helper to send text/html/js without wildcard CORS
+      const sendContent = (
+        content: string | Buffer,
+        status = 200,
+        contentType = "text/html; charset=utf-8",
+      ) => {
+        res.writeHead(status, {
+          "Content-Type": contentType,
+        });
+        res.end(content);
+      };
 
-    // Strictly read-only server: reject non-GET/HEAD requests
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      return sendJson({ error: "Method not allowed: server is read-only" }, 405);
-    }
+      // Strictly read-only server: reject non-GET/HEAD requests
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        return sendJson(
+          { error: "Method not allowed: server is read-only" },
+          405,
+        );
+      }
 
-    // 1. GET /api/health
-    if (pathname === "/api/health") {
-      return sendJson({ status: "ok", timestamp: new Date().toISOString() });
-    }
+      // 1. GET /api/health
+      if (pathname === "/api/health") {
+        return sendJson({ status: "ok", timestamp: new Date().toISOString() });
+      }
 
-    // 2. GET /api/workspaces (Registry list & status summary)
-    if (pathname === "/api/workspaces") {
-      const summaries = await getWorkspacesSummaryList(registry);
-      return sendJson({ workspaces: summaries });
-    }
+      // 2. GET /api/workspaces (Registry list & status summary)
+      if (pathname === "/api/workspaces") {
+        const summaries = await getWorkspacesSummaryList(registry);
+        return sendJson({ workspaces: summaries });
+      }
 
+      // 3. GET /api/state
+      if (pathname === "/api/state") {
+        try {
+          const wsParam = parsedUrl.searchParams.get("workspace");
+          let targetRoot = workspaceRoot;
+          if (wsParam) {
+            try {
+              const resolved = getTargetWorkspace(wsParam);
+              targetRoot = resolved.root;
+            } catch (e: any) {
+              if (e.message === "UNREGISTERED") {
+                return sendJson(
+                  {
+                    error:
+                      "Access denied: Workspace is not in registered allowlist",
+                  },
+                  403,
+                );
+              }
+              return sendJson(
+                {
+                  error:
+                    "Target workspace is unavailable or directory is missing",
+                },
+                404,
+              );
+            }
+          }
+          const targetStatePath = wsParam
+            ? resolve(targetRoot, ".continuity", "state.json")
+            : statePath;
+          if (!isPathContained(targetRoot, targetStatePath)) {
+            return sendJson(
+              { error: "Access denied: State path is outside workspace" },
+              403,
+            );
+          }
+          if (existsSync(targetStatePath)) {
+            const raw = JSON.parse(readFileSync(targetStatePath, "utf8"));
+            return sendJson(raw);
+          }
+          return sendJson({
+            projectId: wsParam || "default",
+            currentChangeId: null,
+            stage: "IDLE",
+            tasks: [],
+            checkpoints: [],
+            blockers: [],
+            decisions: [],
+          });
+        } catch (err: any) {
+          return sendJson(
+            { error: err?.message || "Failed to read state" },
+            500,
+          );
+        }
+      }
 
-    // 3. GET /api/state
-    if (pathname === "/api/state") {
-      try {
+      // 4. GET /api/timeline
+      if (pathname === "/api/timeline") {
+        try {
+          const wsParam = parsedUrl.searchParams.get("workspace");
+          let targetRoot = workspaceRoot;
+          if (wsParam) {
+            try {
+              const resolved = getTargetWorkspace(wsParam);
+              targetRoot = resolved.root;
+            } catch (e: any) {
+              if (e.message === "UNREGISTERED") {
+                return sendJson(
+                  {
+                    error:
+                      "Access denied: Workspace is not in registered allowlist",
+                  },
+                  403,
+                );
+              }
+              return sendJson(
+                {
+                  error:
+                    "Target workspace is unavailable or directory is missing",
+                },
+                404,
+              );
+            }
+          }
+          const targetStatePath = wsParam
+            ? resolve(targetRoot, ".continuity", "state.json")
+            : statePath;
+          if (!isPathContained(targetRoot, targetStatePath)) {
+            return sendJson(
+              { error: "Access denied: State path is outside workspace" },
+              403,
+            );
+          }
+
+          const rawLimit = parsedUrl.searchParams.get("limit");
+          let limit = 20;
+          if (rawLimit !== null) {
+            const parsed = Number(rawLimit);
+            if (Number.isSafeInteger(parsed)) {
+              limit = parsed;
+            }
+          }
+
+          if (existsSync(targetStatePath)) {
+            try {
+              const raw = JSON.parse(readFileSync(targetStatePath, "utf8"));
+              const events = extractWorkflowTimeline(raw, limit);
+              return sendJson({ events });
+            } catch {
+              return sendJson({ events: [] });
+            }
+          }
+          return sendJson({ events: [] });
+        } catch (err: any) {
+          return sendJson(
+            { error: err?.message || "Failed to read timeline" },
+            500,
+          );
+        }
+      }
+
+      // 5. GET /api/git
+      if (pathname === "/api/git") {
         const wsParam = parsedUrl.searchParams.get("workspace");
         let targetRoot = workspaceRoot;
         if (wsParam) {
@@ -640,115 +955,113 @@ export function createDashboardServer(options: DashboardOptions = {}) {
             targetRoot = resolved.root;
           } catch (e: any) {
             if (e.message === "UNREGISTERED") {
-              return sendJson({ error: "Access denied: Workspace is not in registered allowlist" }, 403);
+              return sendJson(
+                {
+                  error:
+                    "Access denied: Workspace is not in registered allowlist",
+                },
+                403,
+              );
             }
-            return sendJson({ error: "Target workspace is unavailable or directory is missing" }, 404);
+            return sendJson({ error: "Target workspace is unavailable" }, 404);
           }
         }
-        const targetStatePath = wsParam
-          ? resolve(targetRoot, ".continuity", "state.json")
-          : statePath;
-        if (!isPathContained(targetRoot, targetStatePath)) {
-          return sendJson({ error: "Access denied: State path is outside workspace" }, 403);
-        }
-        if (existsSync(targetStatePath)) {
-          const raw = JSON.parse(readFileSync(targetStatePath, "utf8"));
-          return sendJson(raw);
-        }
-        return sendJson({ projectId: wsParam || "default", currentChangeId: null, stage: "IDLE", tasks: [], checkpoints: [], blockers: [], decisions: [] });
-      } catch (err: any) {
-        return sendJson({ error: err?.message || "Failed to read state" }, 500);
+        const summary = getGitSummary(targetRoot);
+        return sendJson(summary);
       }
-    }
 
-    // 4. GET /api/git
-    if (pathname === "/api/git") {
-      const wsParam = parsedUrl.searchParams.get("workspace");
-      let targetRoot = workspaceRoot;
-      if (wsParam) {
-        try {
-          const resolved = getTargetWorkspace(wsParam);
-          targetRoot = resolved.root;
-        } catch (e: any) {
-          if (e.message === "UNREGISTERED") {
-            return sendJson({ error: "Access denied: Workspace is not in registered allowlist" }, 403);
+      // 6. GET /api/artifacts
+      if (pathname === "/api/artifacts") {
+        const wsParam = parsedUrl.searchParams.get("workspace");
+        let targetRoot = workspaceRoot;
+        if (wsParam) {
+          try {
+            const resolved = getTargetWorkspace(wsParam);
+            targetRoot = resolved.root;
+          } catch (e: any) {
+            if (e.message === "UNREGISTERED") {
+              return sendJson(
+                {
+                  error:
+                    "Access denied: Workspace is not in registered allowlist",
+                },
+                403,
+              );
+            }
+            return sendJson({ error: "Target workspace is unavailable" }, 404);
           }
-          return sendJson({ error: "Target workspace is unavailable" }, 404);
         }
-      }
-      const summary = getGitSummary(targetRoot);
-      return sendJson(summary);
-    }
 
-    // 5. GET /api/artifacts
-    if (pathname === "/api/artifacts") {
-      const wsParam = parsedUrl.searchParams.get("workspace");
-      let targetRoot = workspaceRoot;
-      if (wsParam) {
-        try {
-          const resolved = getTargetWorkspace(wsParam);
-          targetRoot = resolved.root;
-        } catch (e: any) {
-          if (e.message === "UNREGISTERED") {
-            return sendJson({ error: "Access denied: Workspace is not in registered allowlist" }, 403);
-          }
-          return sendJson({ error: "Target workspace is unavailable" }, 404);
+        const requestedPath = parsedUrl.searchParams.get("path");
+        if (!requestedPath) {
+          // List allowlisted artifacts
+          const artifacts = getAllowlistedArtifactsList(targetRoot);
+          return sendJson({ artifacts });
         }
-      }
 
-      const requestedPath = parsedUrl.searchParams.get("path");
-      if (!requestedPath) {
-        // List allowlisted artifacts
-        const artifacts = getAllowlistedArtifactsList(targetRoot);
-        return sendJson({ artifacts });
-      }
+        // Security check: Segment-aware containment and allowlist
+        const targetPath = join(targetRoot, requestedPath);
+        if (!isAllowlistedArtifact(targetRoot, targetPath)) {
+          return sendJson(
+            {
+              error:
+                "Access denied: Path is outside workspace or not allowlisted",
+            },
+            403,
+          );
+        }
 
-      // Security check: Segment-aware containment and allowlist
-      const targetPath = join(targetRoot, requestedPath);
-      if (!isAllowlistedArtifact(targetRoot, targetPath)) {
-        return sendJson({ error: "Access denied: Path is outside workspace or not allowlisted" }, 403);
-      }
+        if (!existsSync(targetPath) || statSync(targetPath).isDirectory()) {
+          return sendJson({ error: "Artifact not found" }, 404);
+        }
 
-      if (!existsSync(targetPath) || statSync(targetPath).isDirectory()) {
-        return sendJson({ error: "Artifact not found" }, 404);
-      }
-
-      try {
-        const content = readFileSync(targetPath, "utf8");
-        return sendContent(content, 200, "text/plain; charset=utf-8");
-      } catch (err: any) {
-        return sendJson({ error: err?.message || "Failed to read artifact" }, 500);
-      }
-    }
-
-    // 6. GET /bundle.js (Local offline React bundle from fixed installation path)
-    if (pathname === "/bundle.js" || pathname === "/dist/public/bundle.js") {
-      const moduleDir = dirname(fileURLToPath(import.meta.url));
-      const candidates = [
-        join(moduleDir, "public", "bundle.js"),
-        resolve(moduleDir, "..", "dist", "public", "bundle.js")
-      ];
-      const bundlePath = candidates.find(p => existsSync(p));
-      if (bundlePath) {
         try {
-          const js = readFileSync(bundlePath, "utf8");
-          return sendContent(js, 200, "application/javascript; charset=utf-8");
+          const content = readFileSync(targetPath, "utf8");
+          return sendContent(content, 200, "text/plain; charset=utf-8");
         } catch (err: any) {
-          return sendJson({ error: "Failed to read bundle" }, 500);
+          return sendJson(
+            { error: err?.message || "Failed to read artifact" },
+            500,
+          );
         }
       }
-      return sendJson({ error: "Bundle not found. Run npm run build first." }, 404);
-    }
 
-    // 7. GET / or UI route
-    if (pathname === "/" || pathname === "/index.html") {
-      const html = getDashboardHtml();
-      return sendContent(html, 200, "text/html; charset=utf-8");
-    }
+      // 7. GET /bundle.js (Local offline React bundle from fixed installation path)
+      if (pathname === "/bundle.js" || pathname === "/dist/public/bundle.js") {
+        const moduleDir = dirname(fileURLToPath(import.meta.url));
+        const candidates = [
+          join(moduleDir, "public", "bundle.js"),
+          resolve(moduleDir, "..", "dist", "public", "bundle.js"),
+        ];
+        const bundlePath = candidates.find((p) => existsSync(p));
+        if (bundlePath) {
+          try {
+            const js = readFileSync(bundlePath, "utf8");
+            return sendContent(
+              js,
+              200,
+              "application/javascript; charset=utf-8",
+            );
+          } catch (err: any) {
+            return sendJson({ error: "Failed to read bundle" }, 500);
+          }
+        }
+        return sendJson(
+          { error: "Bundle not found. Run npm run build first." },
+          404,
+        );
+      }
 
-    // Fallback 404
-    return sendJson({ error: "Not found" }, 404);
-  });
+      // 7. GET / or UI route
+      if (pathname === "/" || pathname === "/index.html") {
+        const html = getDashboardHtml();
+        return sendContent(html, 200, "text/html; charset=utf-8");
+      }
+
+      // Fallback 404
+      return sendJson({ error: "Not found" }, 404);
+    },
+  );
 
   return {
     server,
@@ -760,31 +1073,43 @@ export function createDashboardServer(options: DashboardOptions = {}) {
         // Bind strictly to 127.0.0.1
         server.listen(port, "127.0.0.1", () => {
           const address = server.address();
-          const actualPort = typeof address === "object" && address ? address.port : port;
+          const actualPort =
+            typeof address === "object" && address ? address.port : port;
           resolvePromise(actualPort);
         });
         server.on("error", reject);
       }),
     stop: () =>
       new Promise<void>((resolvePromise, reject) => {
-        server.close(err => (err ? reject(err) : resolvePromise()));
-      })
+        server.close((err) => (err ? reject(err) : resolvePromise()));
+      }),
   };
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+if (
+  process.argv[1] &&
+  fileURLToPath(import.meta.url) === resolve(process.argv[1])
+) {
   try {
     const cliOptions = parseDashboardCliArgs(process.argv.slice(2));
     const dashboard = createDashboardServer(cliOptions);
-    dashboard.start().then(actualPort => {
-      console.log(`[Continuity Dashboard] Running on http://127.0.0.1:${actualPort} (workspace: ${dashboard.workspaceRoot})`);
-    }).catch((err: any) => {
-      console.error(`[Continuity Dashboard Error] ${err?.message || String(err)}`);
-      process.exit(1);
-    });
+    dashboard
+      .start()
+      .then((actualPort) => {
+        console.log(
+          `[Continuity Dashboard] Running on http://127.0.0.1:${actualPort} (workspace: ${dashboard.workspaceRoot})`,
+        );
+      })
+      .catch((err: any) => {
+        console.error(
+          `[Continuity Dashboard Error] ${err?.message || String(err)}`,
+        );
+        process.exit(1);
+      });
   } catch (err: any) {
-    console.error(`[Continuity Dashboard Error] ${err?.message || String(err)}`);
+    console.error(
+      `[Continuity Dashboard Error] ${err?.message || String(err)}`,
+    );
     process.exit(1);
   }
 }
-

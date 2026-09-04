@@ -11,6 +11,7 @@ import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import {
   createDashboardServer,
+  extractWorkflowTimeline,
   getGitSummary,
   getWorkspacesSummaryList,
   isAllowlistedArtifact,
@@ -1131,6 +1132,199 @@ test("GET /api/workspaces reports ONLINE/OFFLINE instanceHealth in parallel with
     await Promise.all([mainDashboard.stop(), secondInstance.stop()]);
     try {
       rmSync(tempRegDir, { recursive: true, force: true });
+    } catch {}
+  }
+});
+
+test("extractWorkflowTimeline deterministically aggregates, sorts descending, and clamps limits", () => {
+  // Empty / null state
+  assert.deepEqual(extractWorkflowTimeline(null), []);
+  assert.deepEqual(extractWorkflowTimeline({}), []);
+
+  const mockState = {
+    checkpoints: [
+      {
+        id: "cp-1",
+        type: "spec_review",
+        changeId: "feature-a",
+        status: "APPROVED",
+        payload: "Spec payload A",
+        createdAt: "2026-09-01T10:00:00.000Z",
+        decidedAt: "2026-09-01T10:15:00.000Z",
+        reasoning: "Spec approved",
+      },
+      {
+        id: "cp-2",
+        type: "impl_review",
+        changeId: "feature-a",
+        status: "PENDING",
+        payload: "Impl payload A",
+        createdAt: "2026-09-01T11:00:00.000Z",
+      },
+    ],
+    decisions: [
+      {
+        timestamp: "2026-09-01T10:30:00.000Z",
+        actor: "developer",
+        decision: "Adopted sqlite state backend",
+        reasoning: "Better performance",
+      },
+    ],
+  };
+
+  const allEvents = extractWorkflowTimeline(mockState, 20);
+  assert.equal(allEvents.length, 4);
+
+  // Descending order verification: newest (11:00) -> (10:30) -> (10:15) -> (10:00)
+  assert.equal(allEvents[0].id, "cp-2-req");
+  assert.equal(allEvents[0].type, "CHECKPOINT_REQUESTED");
+  assert.equal(allEvents[0].badgeVariant, "amber");
+
+  assert.equal(allEvents[1].type, "DECISION");
+  assert.equal(allEvents[1].title, "Adopted sqlite state backend");
+  assert.equal(allEvents[1].actor, "developer");
+
+  assert.equal(allEvents[2].id, "cp-1-dec");
+  assert.equal(allEvents[2].type, "CHECKPOINT_DECIDED");
+  assert.equal(allEvents[2].badgeVariant, "green");
+
+  assert.equal(allEvents[3].id, "cp-1-req");
+  assert.equal(allEvents[3].type, "CHECKPOINT_REQUESTED");
+
+  // Limit clamping test
+  const clamped2 = extractWorkflowTimeline(mockState, 2);
+  assert.equal(clamped2.length, 2);
+  assert.equal(clamped2[0].id, "cp-2-req");
+  assert.equal(clamped2[1].type, "DECISION");
+
+  // Extreme limits
+  const clampedMax = extractWorkflowTimeline(mockState, 100);
+  assert.equal(clampedMax.length, 4);
+
+  const clampedMin = extractWorkflowTimeline(mockState, 0);
+  assert.equal(clampedMin.length, 1);
+});
+
+test("GET /api/timeline returns timeline events for registered workspaces, enforces 403 on unregistered, and handles malformed state safely", async () => {
+  const tempDir = resolve("..", "test-timeline-endpoint-workspace");
+  const wsValid = join(tempDir, "valid-ws");
+  const wsMalformed = join(tempDir, "malformed-ws");
+  const regPath = join(tempDir, "workspaces.json");
+
+  mkdirSync(join(wsValid, ".continuity"), { recursive: true });
+  mkdirSync(join(wsMalformed, ".continuity"), { recursive: true });
+
+  writeFileSync(
+    join(wsValid, ".continuity", "state.json"),
+    JSON.stringify({
+      projectId: "timeline-proj",
+      stage: "CHECKPOINT_1",
+      checkpoints: [
+        {
+          id: "cp-t1",
+          type: "spec_review",
+          status: "APPROVED",
+          payload: "Review initial spec",
+          createdAt: "2026-09-02T08:00:00.000Z",
+          decidedAt: "2026-09-02T08:30:00.000Z",
+          reasoning: "Approved cleanly",
+        },
+      ],
+      decisions: [
+        {
+          timestamp: "2026-09-02T08:15:00.000Z",
+          actor: "lead",
+          decision: "Architecture decision logged",
+          reasoning: "Confirmed pattern",
+        },
+      ],
+    }),
+    "utf8",
+  );
+
+  writeFileSync(
+    join(wsMalformed, ".continuity", "state.json"),
+    "{ invalid state json syntax --- ",
+    "utf8",
+  );
+
+  writeFileSync(
+    regPath,
+    JSON.stringify({
+      workspaces: [
+        {
+          id: "ws-valid",
+          name: "Valid Timeline Workspace",
+          path: wsValid,
+          port: 4005,
+        },
+        {
+          id: "ws-malformed",
+          name: "Malformed State Workspace",
+          path: wsMalformed,
+          port: 4006,
+        },
+      ],
+    }),
+    "utf8",
+  );
+
+  const dash = createDashboardServer({
+    workspaceRoot: wsValid,
+    registryPath: regPath,
+    port: 0,
+  });
+  const port = await dash.start();
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    // 1. Valid workspace timeline retrieval
+    const res = await fetch(`${baseUrl}/api/timeline?workspace=ws-valid`);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("access-control-allow-origin"), null);
+    const data = await res.json();
+    assert.ok(Array.isArray(data.events));
+    assert.equal(data.events.length, 3);
+    assert.equal(data.events[0].id, "cp-t1-dec");
+
+    // 2. Limit query parameter test
+    const resLimit = await fetch(
+      `${baseUrl}/api/timeline?workspace=ws-valid&limit=1`,
+    );
+    assert.equal(resLimit.status, 200);
+    const dataLimit = await resLimit.json();
+    assert.equal(dataLimit.events.length, 1);
+
+    // 3. Unregistered workspace rejection with 403
+    const resUnreg = await fetch(
+      `${baseUrl}/api/timeline?workspace=unregistered-fake`,
+    );
+    assert.equal(resUnreg.status, 403);
+
+    // 4. Malformed state file handling: returns safe empty events without crashing
+    const resMalformed = await fetch(
+      `${baseUrl}/api/timeline?workspace=ws-malformed`,
+    );
+    assert.equal(resMalformed.status, 200);
+    const dataMalformed = await resMalformed.json();
+    assert.deepEqual(dataMalformed, { events: [] });
+
+    // 5. /api/workspaces summary includes recentActivity
+    const resWs = await fetch(`${baseUrl}/api/workspaces`);
+    assert.equal(resWs.status, 200);
+    const wsData = await resWs.json();
+    const validSummary = wsData.workspaces.find(
+      (w: any) => w.id === "ws-valid",
+    );
+    assert.ok(validSummary);
+    assert.ok(
+      validSummary.recentActivity &&
+        validSummary.recentActivity.includes("Checkpoint APPROVED"),
+    );
+  } finally {
+    await dash.stop();
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
     } catch {}
   }
 });

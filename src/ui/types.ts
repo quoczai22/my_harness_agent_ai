@@ -49,6 +49,20 @@ export interface GitSummary {
   modifiedFiles: string[];
 }
 
+export interface TimelineEvent {
+  id: string;
+  type:
+    | "CHECKPOINT_REQUESTED"
+    | "CHECKPOINT_DECIDED"
+    | "DECISION"
+    | "STAGE_CHANGE";
+  timestamp: string;
+  title: string;
+  description: string;
+  actor?: string;
+  badgeVariant: "purple" | "blue" | "green" | "amber" | "rose";
+}
+
 export interface WorkspaceSummary {
   id: string;
   name: string;
@@ -62,4 +76,5 @@ export interface WorkspaceSummary {
   tasksCount?: number;
   blockersCount?: number;
   gitClean?: boolean;
+  recentActivity?: string;
 }
