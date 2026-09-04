@@ -4,9 +4,31 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { execSync } from "node:child_process";
 import { fileURLToPath, URL } from "node:url";
 
+export interface RegisteredWorkspace {
+  id: string;
+  name: string;
+  path: string;
+  port?: number;
+}
+
+export interface WorkspaceSummary {
+  id: string;
+  name: string;
+  path: string;
+  port?: number;
+  status: "ACTIVE" | "UNAVAILABLE";
+  error?: string;
+  stage?: string;
+  currentChangeId?: string | null;
+  tasksCount?: number;
+  blockersCount?: number;
+  gitClean?: boolean;
+}
+
 export interface DashboardOptions {
   workspaceRoot?: string;
   port?: number;
+  registryPath?: string;
 }
 
 const ALLOWLISTED_PREFIXES = ["openspec", "reports", "tasks", ".continuity"];
@@ -70,6 +92,100 @@ export function getAllowlistedArtifactsList(workspaceRoot: string): string[] {
     scan(dir);
   }
   return results;
+}
+
+export function loadWorkspaceRegistry(registryPath: string, defaultWorkspaceRoot: string, defaultPort = 3456): RegisteredWorkspace[] {
+  const resolvedRegistryPath = resolve(registryPath);
+  if (existsSync(resolvedRegistryPath)) {
+    try {
+      const raw = JSON.parse(readFileSync(resolvedRegistryPath, "utf8"));
+      if (Array.isArray(raw?.workspaces) && raw.workspaces.length > 0) {
+        return raw.workspaces
+          .map((w: any) => ({
+            id: String(w.id || "").trim(),
+            name: String(w.name || w.id || "").trim(),
+            path: resolve(String(w.path || "").trim()),
+            port: typeof w.port === "number" ? w.port : defaultPort
+          }))
+          .filter((w: RegisteredWorkspace) => w.id && w.path);
+      }
+    } catch {}
+  }
+  return [
+    {
+      id: "default",
+      name: "Default Workspace",
+      path: resolve(defaultWorkspaceRoot),
+      port: defaultPort
+    }
+  ];
+}
+
+export function getWorkspacesSummaryList(registry: RegisteredWorkspace[]): WorkspaceSummary[] {
+  return registry.map(w => {
+    const canonicalPath = resolve(w.path);
+    if (!existsSync(canonicalPath)) {
+      return {
+        id: w.id,
+        name: w.name,
+        path: canonicalPath,
+        port: w.port,
+        status: "UNAVAILABLE",
+        error: "Workspace directory does not exist"
+      };
+    }
+    try {
+      if (!statSync(canonicalPath).isDirectory()) {
+        return {
+          id: w.id,
+          name: w.name,
+          path: canonicalPath,
+          port: w.port,
+          status: "UNAVAILABLE",
+          error: "Workspace path is not a directory"
+        };
+      }
+    } catch {
+      return {
+        id: w.id,
+        name: w.name,
+        path: canonicalPath,
+        port: w.port,
+        status: "UNAVAILABLE",
+        error: "Cannot access workspace directory"
+      };
+    }
+
+    let stage = "IDLE";
+    let currentChangeId: string | null = null;
+    let tasksCount = 0;
+    let blockersCount = 0;
+    const statePath = join(canonicalPath, ".continuity", "state.json");
+    if (isPathContained(canonicalPath, statePath) && existsSync(statePath)) {
+      try {
+        const state = JSON.parse(readFileSync(statePath, "utf8"));
+        stage = state.stage || "IDLE";
+        currentChangeId = state.currentChangeId || null;
+        tasksCount = Array.isArray(state.tasks) ? state.tasks.length : 0;
+        blockersCount = Array.isArray(state.blockers) ? state.blockers.length : 0;
+      } catch {}
+    }
+
+    const git = getGitSummary(canonicalPath);
+
+    return {
+      id: w.id,
+      name: w.name,
+      path: canonicalPath,
+      port: w.port,
+      status: "ACTIVE",
+      stage,
+      currentChangeId,
+      tasksCount,
+      blockersCount,
+      gitClean: git.clean
+    };
+  });
 }
 
 export function getDashboardHtml(): string {
@@ -277,6 +393,27 @@ export function parseDashboardCliArgs(args: string[]): DashboardOptions {
         throw new Error("Value for flag -p cannot be empty");
       }
       options.port = parsePortValue(val, "-p");
+    } else if (arg === "--registry" || arg === "-r") {
+      if (i + 1 >= args.length || args[i + 1].startsWith("-")) {
+        throw new Error(`Missing value for flag ${arg}`);
+      }
+      const val = args[++i];
+      if (!val || !val.trim()) {
+        throw new Error(`Value for flag ${arg} cannot be empty`);
+      }
+      options.registryPath = val;
+    } else if (arg.startsWith("--registry=")) {
+      const val = arg.slice("--registry=".length);
+      if (!val || !val.trim()) {
+        throw new Error("Value for flag --registry cannot be empty");
+      }
+      options.registryPath = val;
+    } else if (arg.startsWith("-r=")) {
+      const val = arg.slice("-r=".length);
+      if (!val || !val.trim()) {
+        throw new Error("Value for flag -r cannot be empty");
+      }
+      options.registryPath = val;
     } else {
       throw new Error(`Unknown or invalid argument: "${arg}"`);
     }
@@ -312,6 +449,23 @@ export function createDashboardServer(options: DashboardOptions = {}) {
     port = 3456;
   }
   const statePath = resolve(workspaceRoot, process.env.CONTINUITY_STATE_PATH ?? ".continuity/state.json");
+  const registryPath = resolve(options.registryPath ?? process.env.CONTINUITY_REGISTRY_PATH ?? join(workspaceRoot, ".continuity", "workspaces.json"));
+  const registry = loadWorkspaceRegistry(registryPath, workspaceRoot, port);
+
+  const getTargetWorkspace = (workspaceId?: string | null): { root: string; summary?: RegisteredWorkspace } => {
+    if (!workspaceId) {
+      return { root: workspaceRoot };
+    }
+    const match = registry.find(w => w.id === workspaceId);
+    if (!match) {
+      throw new Error("UNREGISTERED");
+    }
+    const canonicalRoot = resolve(match.path);
+    if (!existsSync(canonicalRoot) || !statSync(canonicalRoot).isDirectory()) {
+      throw new Error("UNAVAILABLE");
+    }
+    return { root: canonicalRoot, summary: match };
+  };
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
@@ -343,40 +497,89 @@ export function createDashboardServer(options: DashboardOptions = {}) {
       return sendJson({ status: "ok", timestamp: new Date().toISOString() });
     }
 
-    // 2. GET /api/state
+    // 2. GET /api/workspaces (Registry list & status summary)
+    if (pathname === "/api/workspaces") {
+      const summaries = getWorkspacesSummaryList(registry);
+      return sendJson({ workspaces: summaries });
+    }
+
+    // 3. GET /api/state
     if (pathname === "/api/state") {
       try {
-        if (!isPathContained(workspaceRoot, statePath)) {
+        const wsParam = parsedUrl.searchParams.get("workspace");
+        let targetRoot = workspaceRoot;
+        if (wsParam) {
+          try {
+            const resolved = getTargetWorkspace(wsParam);
+            targetRoot = resolved.root;
+          } catch (e: any) {
+            if (e.message === "UNREGISTERED") {
+              return sendJson({ error: "Access denied: Workspace is not in registered allowlist" }, 403);
+            }
+            return sendJson({ error: "Target workspace is unavailable or directory is missing" }, 404);
+          }
+        }
+        const targetStatePath = wsParam
+          ? resolve(targetRoot, ".continuity", "state.json")
+          : statePath;
+        if (!isPathContained(targetRoot, targetStatePath)) {
           return sendJson({ error: "Access denied: State path is outside workspace" }, 403);
         }
-        if (existsSync(statePath)) {
-          const raw = JSON.parse(readFileSync(statePath, "utf8"));
+        if (existsSync(targetStatePath)) {
+          const raw = JSON.parse(readFileSync(targetStatePath, "utf8"));
           return sendJson(raw);
         }
-        return sendJson({ projectId: "default", currentChangeId: null, stage: "IDLE", tasks: [], checkpoints: [], blockers: [], decisions: [] });
+        return sendJson({ projectId: wsParam || "default", currentChangeId: null, stage: "IDLE", tasks: [], checkpoints: [], blockers: [], decisions: [] });
       } catch (err: any) {
         return sendJson({ error: err?.message || "Failed to read state" }, 500);
       }
     }
 
-    // 3. GET /api/git
+    // 4. GET /api/git
     if (pathname === "/api/git") {
-      const summary = getGitSummary(workspaceRoot);
+      const wsParam = parsedUrl.searchParams.get("workspace");
+      let targetRoot = workspaceRoot;
+      if (wsParam) {
+        try {
+          const resolved = getTargetWorkspace(wsParam);
+          targetRoot = resolved.root;
+        } catch (e: any) {
+          if (e.message === "UNREGISTERED") {
+            return sendJson({ error: "Access denied: Workspace is not in registered allowlist" }, 403);
+          }
+          return sendJson({ error: "Target workspace is unavailable" }, 404);
+        }
+      }
+      const summary = getGitSummary(targetRoot);
       return sendJson(summary);
     }
 
-    // 4. GET /api/artifacts
+    // 5. GET /api/artifacts
     if (pathname === "/api/artifacts") {
+      const wsParam = parsedUrl.searchParams.get("workspace");
+      let targetRoot = workspaceRoot;
+      if (wsParam) {
+        try {
+          const resolved = getTargetWorkspace(wsParam);
+          targetRoot = resolved.root;
+        } catch (e: any) {
+          if (e.message === "UNREGISTERED") {
+            return sendJson({ error: "Access denied: Workspace is not in registered allowlist" }, 403);
+          }
+          return sendJson({ error: "Target workspace is unavailable" }, 404);
+        }
+      }
+
       const requestedPath = parsedUrl.searchParams.get("path");
       if (!requestedPath) {
         // List allowlisted artifacts
-        const artifacts = getAllowlistedArtifactsList(workspaceRoot);
+        const artifacts = getAllowlistedArtifactsList(targetRoot);
         return sendJson({ artifacts });
       }
 
       // Security check: Segment-aware containment and allowlist
-      const targetPath = join(workspaceRoot, requestedPath);
-      if (!isAllowlistedArtifact(workspaceRoot, targetPath)) {
+      const targetPath = join(targetRoot, requestedPath);
+      if (!isAllowlistedArtifact(targetRoot, targetPath)) {
         return sendJson({ error: "Access denied: Path is outside workspace or not allowlisted" }, 403);
       }
 
@@ -392,7 +595,7 @@ export function createDashboardServer(options: DashboardOptions = {}) {
       }
     }
 
-    // 5. GET /bundle.js (Local offline React bundle from fixed installation path)
+    // 6. GET /bundle.js (Local offline React bundle from fixed installation path)
     if (pathname === "/bundle.js" || pathname === "/dist/public/bundle.js") {
       const moduleDir = dirname(fileURLToPath(import.meta.url));
       const candidates = [
@@ -411,7 +614,7 @@ export function createDashboardServer(options: DashboardOptions = {}) {
       return sendJson({ error: "Bundle not found. Run npm run build first." }, 404);
     }
 
-    // 6. GET / or UI route
+    // 7. GET / or UI route
     if (pathname === "/" || pathname === "/index.html") {
       const html = getDashboardHtml();
       return sendContent(html, 200, "text/html; charset=utf-8");
@@ -425,6 +628,7 @@ export function createDashboardServer(options: DashboardOptions = {}) {
     server,
     port,
     workspaceRoot,
+    registry,
     start: () =>
       new Promise<number>((resolvePromise, reject) => {
         // Bind strictly to 127.0.0.1
@@ -457,3 +661,4 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
     process.exit(1);
   }
 }
+

@@ -5,8 +5,10 @@ import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import {
   createDashboardServer,
+  getWorkspacesSummaryList,
   isAllowlistedArtifact,
   isPathContained,
+  loadWorkspaceRegistry,
   parseDashboardCliArgs,
 } from "./dashboard.js";
 
@@ -456,3 +458,151 @@ test("state containment: /api/state rejects absolute CONTINUITY_STATE_PATH outsi
     } catch {}
   }
 });
+
+test("loadWorkspaceRegistry loads valid registry or falls back to default safely", () => {
+  const defaultRoot = resolve(".");
+  // Nonexistent file -> default single-workspace entry
+  const fallback = loadWorkspaceRegistry("./nonexistent-reg-file.json", defaultRoot, 3456);
+  assert.equal(fallback.length, 1);
+  assert.equal(fallback[0].id, "default");
+  assert.equal(fallback[0].path, defaultRoot);
+
+  // Valid registry file
+  const tempRegPath = resolve(".", "test-temp-reg.json");
+  try {
+    writeFileSync(
+      tempRegPath,
+      JSON.stringify({
+        workspaces: [
+          { id: "ws-a", name: "Workspace Alpha", path: "./", port: 3457 },
+          { id: "ws-b", name: "Workspace Beta", path: "../nonexistent-dir", port: 3458 }
+        ]
+      }),
+      "utf8"
+    );
+    const loaded = loadWorkspaceRegistry(tempRegPath, defaultRoot, 3456);
+    assert.equal(loaded.length, 2);
+    assert.equal(loaded[0].id, "ws-a");
+    assert.equal(loaded[0].port, 3457);
+    assert.equal(loaded[1].id, "ws-b");
+    assert.equal(loaded[1].port, 3458);
+  } finally {
+    try {
+      rmSync(tempRegPath, { force: true });
+    } catch {}
+  }
+});
+
+test("CLI parser parses and validates --registry and -r flags", () => {
+  assert.deepEqual(parseDashboardCliArgs(["--registry", "./custom-registry.json"]), {
+    registryPath: "./custom-registry.json"
+  });
+  assert.deepEqual(parseDashboardCliArgs(["-r", "./custom-registry2.json"]), {
+    registryPath: "./custom-registry2.json"
+  });
+  assert.deepEqual(parseDashboardCliArgs(["--registry=./custom-registry3.json"]), {
+    registryPath: "./custom-registry3.json"
+  });
+  assert.deepEqual(parseDashboardCliArgs(["-r=./custom-registry4.json"]), {
+    registryPath: "./custom-registry4.json"
+  });
+
+  // Rejections
+  assert.throws(() => parseDashboardCliArgs(["--registry"]), /Missing value for flag --registry/);
+  assert.throws(() => parseDashboardCliArgs(["-r"]), /Missing value for flag -r/);
+  assert.throws(() => parseDashboardCliArgs(["--registry="]), /Value for flag --registry cannot be empty/);
+  assert.throws(() => parseDashboardCliArgs(["-r="]), /Value for flag -r cannot be empty/);
+});
+
+test("GET /api/workspaces returns read-only summary for active and unavailable workspaces without crashing", async () => {
+  const tempRegDir = resolve("..", "test-phase-c-registry-temp");
+  const wsValid = join(tempRegDir, "valid-ws");
+  const wsMissing = join(tempRegDir, "missing-ws");
+  const regPath = join(tempRegDir, "workspaces.json");
+
+  mkdirSync(join(wsValid, ".continuity"), { recursive: true });
+  mkdirSync(join(wsValid, "reports"), { recursive: true });
+  writeFileSync(
+    join(wsValid, ".continuity", "state.json"),
+    JSON.stringify({ projectId: "alpha-proj", stage: "SPEC_READY", tasks: [{ id: "t1", status: "done" }], blockers: [] }),
+    "utf8"
+  );
+  writeFileSync(
+    join(wsValid, "reports", "status.txt"),
+    "alpha-report-content",
+    "utf8"
+  );
+  writeFileSync(
+    regPath,
+    JSON.stringify({
+      workspaces: [
+        { id: "alpha", name: "Alpha Workspace", path: wsValid, port: 4001 },
+        { id: "beta", name: "Beta Missing Workspace", path: wsMissing, port: 4002 }
+      ]
+    }),
+    "utf8"
+  );
+
+  const dash = createDashboardServer({
+    workspaceRoot: wsValid,
+    registryPath: regPath,
+    port: 0
+  });
+  const port = await dash.start();
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    // 1. GET /api/workspaces
+    const res = await fetch(`${baseUrl}/api/workspaces`);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("access-control-allow-origin"), null);
+    const data = await res.json();
+    assert.ok(Array.isArray(data.workspaces));
+    assert.equal(data.workspaces.length, 2);
+
+    // Alpha is ACTIVE
+    const alphaWs = data.workspaces.find((w: any) => w.id === "alpha");
+    assert.ok(alphaWs);
+    assert.equal(alphaWs.status, "ACTIVE");
+    assert.equal(alphaWs.stage, "SPEC_READY");
+    assert.equal(alphaWs.tasksCount, 1);
+
+    // Beta is UNAVAILABLE
+    const betaWs = data.workspaces.find((w: any) => w.id === "beta");
+    assert.ok(betaWs);
+    assert.equal(betaWs.status, "UNAVAILABLE");
+    assert.ok(betaWs.error.includes("does not exist"));
+
+    // 2. Querying alpha workspace via ?workspace=alpha
+    const stateAlpha = await (await fetch(`${baseUrl}/api/state?workspace=alpha`)).json();
+    assert.equal(stateAlpha.projectId, "alpha-proj");
+
+    const artAlpha = await (await fetch(`${baseUrl}/api/artifacts?workspace=alpha`)).json();
+    assert.ok(artAlpha.artifacts.includes("reports/status.txt"));
+
+    const artContent = await (await fetch(`${baseUrl}/api/artifacts?path=reports/status.txt&workspace=alpha`)).text();
+    assert.equal(artContent, "alpha-report-content");
+
+    // 3. Containment rejection on registered workspace
+    const trapRes = await fetch(`${baseUrl}/api/artifacts?path=../workspaces.json&workspace=alpha`);
+    assert.equal(trapRes.status, 403);
+
+    // 4. Querying unregistered workspace returns 403
+    const unregRes = await fetch(`${baseUrl}/api/state?workspace=unregistered-unknown`);
+    assert.equal(unregRes.status, 403);
+
+    // 5. Querying unavailable workspace returns 404
+    const unavailRes = await fetch(`${baseUrl}/api/state?workspace=beta`);
+    assert.equal(unavailRes.status, 404);
+
+    // 6. Non-GET/HEAD mutation returns 405 Method Not Allowed
+    const postRes = await fetch(`${baseUrl}/api/workspaces`, { method: "POST", body: "{}" });
+    assert.equal(postRes.status, 405);
+  } finally {
+    await dash.stop();
+    try {
+      rmSync(tempRegDir, { recursive: true, force: true });
+    } catch {}
+  }
+});
+

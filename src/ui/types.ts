@@ -41,3 +41,18 @@ export interface GitSummary {
   clean: boolean;
   modifiedFiles: string[];
 }
+
+export interface WorkspaceSummary {
+  id: string;
+  name: string;
+  path: string;
+  port?: number;
+  status: "ACTIVE" | "UNAVAILABLE";
+  error?: string;
+  stage?: string;
+  currentChangeId?: string | null;
+  tasksCount?: number;
+  blockersCount?: number;
+  gitClean?: boolean;
+}
+
