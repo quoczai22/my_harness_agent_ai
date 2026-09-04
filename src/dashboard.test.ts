@@ -17,6 +17,7 @@ import {
   isPathContained,
   loadWorkspaceRegistry,
   parseDashboardCliArgs,
+  validateWorkspaceRegistryData,
 } from "./dashboard.js";
 
 test("segment-aware path containment and prefix-sibling rejection", () => {
@@ -864,4 +865,176 @@ test("GET /api/git returns safe summary without stderr for registered non-git wo
       rmSync(tempRegDir, { recursive: true, force: true });
     } catch {}
   }
+});
+
+test("validateWorkspaceRegistryData enforces strict schema, non-empty fields, and valid ports", () => {
+  // Root type check
+  assert.throws(
+    () => validateWorkspaceRegistryData(null),
+    /Root must be an object/,
+  );
+  assert.throws(
+    () => validateWorkspaceRegistryData([]),
+    /Root must be an object/,
+  );
+  assert.throws(
+    () => validateWorkspaceRegistryData("invalid"),
+    /Root must be an object/,
+  );
+
+  // Missing or empty workspaces array
+  assert.throws(
+    () => validateWorkspaceRegistryData({}),
+    /Missing "workspaces" array/,
+  );
+  assert.throws(
+    () => validateWorkspaceRegistryData({ workspaces: [] }),
+    /"workspaces" array cannot be empty/,
+  );
+
+  // Invalid entry types
+  assert.throws(
+    () => validateWorkspaceRegistryData({ workspaces: [null] }),
+    /Entry must be an object/,
+  );
+  assert.throws(
+    () => validateWorkspaceRegistryData({ workspaces: ["not an object"] }),
+    /Entry must be an object/,
+  );
+
+  // Missing or empty id
+  assert.throws(
+    () =>
+      validateWorkspaceRegistryData({
+        workspaces: [{ name: "A", path: "./" }],
+      }),
+    /"id" must be a non-empty string/,
+  );
+  assert.throws(
+    () =>
+      validateWorkspaceRegistryData({
+        workspaces: [{ id: "   ", name: "A", path: "./" }],
+      }),
+    /"id" must be a non-empty string/,
+  );
+
+  // Missing or empty name
+  assert.throws(
+    () =>
+      validateWorkspaceRegistryData({
+        workspaces: [{ id: "a", name: "", path: "./" }],
+      }),
+    /"name" must be a non-empty string/,
+  );
+
+  // Missing or empty path
+  assert.throws(
+    () =>
+      validateWorkspaceRegistryData({
+        workspaces: [{ id: "a", name: "A", path: "  " }],
+      }),
+    /"path" must be a non-empty string/,
+  );
+
+  // Duplicate ID
+  assert.throws(
+    () =>
+      validateWorkspaceRegistryData({
+        workspaces: [
+          { id: "proj-1", name: "P1", path: "./p1" },
+          { id: "proj-1", name: "P2", path: "./p2" },
+        ],
+      }),
+    /Duplicate workspace id "proj-1"/,
+  );
+
+  // Duplicate canonical path
+  assert.throws(
+    () =>
+      validateWorkspaceRegistryData({
+        workspaces: [
+          { id: "proj-1", name: "P1", path: "./shared" },
+          { id: "proj-2", name: "P2", path: "./shared" },
+        ],
+      }),
+    /Duplicate workspace path/,
+  );
+
+  // Invalid port types and ranges
+  assert.throws(
+    () =>
+      validateWorkspaceRegistryData({
+        workspaces: [{ id: "proj-1", name: "P1", path: "./p1", port: -1 }],
+      }),
+    /Port must be an integer between 0 and 65535/,
+  );
+  assert.throws(
+    () =>
+      validateWorkspaceRegistryData({
+        workspaces: [{ id: "proj-1", name: "P1", path: "./p1", port: 70000 }],
+      }),
+    /Port must be an integer between 0 and 65535/,
+  );
+  assert.throws(
+    () =>
+      validateWorkspaceRegistryData({
+        workspaces: [{ id: "proj-1", name: "P1", path: "./p1", port: 3.14 }],
+      }),
+    /Port must be an integer between 0 and 65535/,
+  );
+  assert.throws(
+    () =>
+      validateWorkspaceRegistryData({
+        workspaces: [
+          { id: "proj-1", name: "P1", path: "./p1", port: "3456" as any },
+        ],
+      }),
+    /Port must be an integer between 0 and 65535/,
+  );
+});
+
+test("loadWorkspaceRegistry and launcher fail fast on explicit missing/malformed registry files", () => {
+  const root = resolve(".");
+  const missingPath = resolve(".", "nonexistent-explicit-registry.json");
+
+  // Explicit registry missing -> throw
+  assert.throws(
+    () => loadWorkspaceRegistry(missingPath, root, 3456, true),
+    /Registry file does not exist/,
+  );
+  assert.throws(
+    () => createDashboardServer({ registryPath: missingPath }),
+    /Registry file does not exist/,
+  );
+
+  // Malformed JSON syntax in explicit registry file
+  const malformedPath = resolve(".", "test-malformed-registry.json");
+  writeFileSync(malformedPath, "{ invalid-json: ", "utf8");
+  try {
+    assert.throws(
+      () => loadWorkspaceRegistry(malformedPath, root, 3456, true),
+      /Invalid JSON syntax/,
+    );
+    assert.throws(
+      () => createDashboardServer({ registryPath: malformedPath }),
+      /Invalid JSON syntax/,
+    );
+  } finally {
+    try {
+      rmSync(malformedPath, { force: true });
+    } catch {}
+  }
+});
+
+test("template .continuity/workspaces.example.json exists and passes validation", () => {
+  const templatePath = resolve(".", ".continuity", "workspaces.example.json");
+  assert.ok(
+    existsSync(templatePath),
+    ".continuity/workspaces.example.json must exist",
+  );
+  const text = readFileSync(templatePath, "utf8");
+  const json = JSON.parse(text);
+  const validated = validateWorkspaceRegistryData(json, templatePath);
+  assert.ok(validated.length >= 1);
+  assert.equal(validated[0].id, "harness-agent");
 });

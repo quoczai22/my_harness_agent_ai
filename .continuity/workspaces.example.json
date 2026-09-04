@@ -1,0 +1,17 @@
+{
+  "$comment": "Continuity Allowed Workspaces Registry Template. Copy this file to .continuity/workspaces.json or specify via --registry / -r.",
+  "workspaces": [
+    {
+      "id": "harness-agent",
+      "name": "Harness Agent Core",
+      "path": ".",
+      "port": 3456
+    },
+    {
+      "id": "project-alpha",
+      "name": "Project Alpha Feature",
+      "path": "../project-alpha",
+      "port": 3457
+    }
+  ]
+}

@@ -102,23 +102,99 @@ export function getAllowlistedArtifactsList(workspaceRoot: string): string[] {
   return results;
 }
 
-export function loadWorkspaceRegistry(registryPath: string, defaultWorkspaceRoot: string, defaultPort = 3456): RegisteredWorkspace[] {
+export function validateWorkspaceRegistryData(raw: any, sourcePath = "registry", defaultPort = 3456): RegisteredWorkspace[] {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`Invalid registry format in ${sourcePath}: Root must be an object.`);
+  }
+  if (!Array.isArray(raw.workspaces)) {
+    throw new Error(`Invalid registry format in ${sourcePath}: Missing "workspaces" array.`);
+  }
+  if (raw.workspaces.length === 0) {
+    throw new Error(`Invalid registry format in ${sourcePath}: "workspaces" array cannot be empty.`);
+  }
+
+  const seenIds = new Set<string>();
+  const seenPaths = new Set<string>();
+  const results: RegisteredWorkspace[] = [];
+
+  for (let i = 0; i < raw.workspaces.length; i++) {
+    const entry = raw.workspaces[i];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`Invalid workspace entry at index ${i} in ${sourcePath}: Entry must be an object.`);
+    }
+
+    const id = typeof entry.id === "string" ? entry.id.trim() : "";
+    if (!id) {
+      throw new Error(`Invalid workspace entry at index ${i} in ${sourcePath}: "id" must be a non-empty string.`);
+    }
+    if (seenIds.has(id)) {
+      throw new Error(`Duplicate workspace id "${id}" found at index ${i} in ${sourcePath}.`);
+    }
+    seenIds.add(id);
+
+    const name = typeof entry.name === "string" ? entry.name.trim() : "";
+    if (!name) {
+      throw new Error(`Invalid workspace entry "${id}" in ${sourcePath}: "name" must be a non-empty string.`);
+    }
+
+    const rawPath = typeof entry.path === "string" ? entry.path.trim() : "";
+    if (!rawPath) {
+      throw new Error(`Invalid workspace entry "${id}" in ${sourcePath}: "path" must be a non-empty string.`);
+    }
+    const canonicalPath = resolve(rawPath);
+    if (seenPaths.has(canonicalPath)) {
+      throw new Error(`Duplicate workspace path "${canonicalPath}" found for entry "${id}" in ${sourcePath}.`);
+    }
+    seenPaths.add(canonicalPath);
+
+    let port = defaultPort;
+    if (entry.port !== undefined) {
+      if (typeof entry.port !== "number" || !Number.isSafeInteger(entry.port) || entry.port < 0 || entry.port > 65535) {
+        throw new Error(`Invalid port for workspace "${id}" in ${sourcePath}: ${entry.port}. Port must be an integer between 0 and 65535.`);
+      }
+      port = entry.port;
+    }
+
+    results.push({
+      id,
+      name,
+      path: canonicalPath,
+      port
+    });
+  }
+
+  return results;
+}
+
+export function loadWorkspaceRegistry(
+  registryPath: string,
+  defaultWorkspaceRoot: string,
+  defaultPort = 3456,
+  isExplicit = false
+): RegisteredWorkspace[] {
   const resolvedRegistryPath = resolve(registryPath);
   if (existsSync(resolvedRegistryPath)) {
     try {
-      const raw = JSON.parse(readFileSync(resolvedRegistryPath, "utf8"));
-      if (Array.isArray(raw?.workspaces) && raw.workspaces.length > 0) {
-        return raw.workspaces
-          .map((w: any) => ({
-            id: String(w.id || "").trim(),
-            name: String(w.name || w.id || "").trim(),
-            path: resolve(String(w.path || "").trim()),
-            port: typeof w.port === "number" ? w.port : defaultPort
-          }))
-          .filter((w: RegisteredWorkspace) => w.id && w.path);
+      if (statSync(resolvedRegistryPath).isDirectory()) {
+        throw new Error(`Registry path is a directory, expected a JSON file: ${resolvedRegistryPath}`);
       }
-    } catch {}
+    } catch (err: any) {
+      if (err.message.includes("is a directory")) throw err;
+    }
+    let rawJson: any;
+    try {
+      const text = readFileSync(resolvedRegistryPath, "utf8");
+      rawJson = JSON.parse(text);
+    } catch (err: any) {
+      throw new Error(`Invalid JSON syntax in registry file "${resolvedRegistryPath}": ${err?.message || err}`);
+    }
+    return validateWorkspaceRegistryData(rawJson, resolvedRegistryPath, defaultPort);
   }
+
+  if (isExplicit) {
+    throw new Error(`Registry file does not exist: "${resolvedRegistryPath}"`);
+  }
+
   return [
     {
       id: "default",
@@ -128,6 +204,7 @@ export function loadWorkspaceRegistry(registryPath: string, defaultWorkspaceRoot
     }
   ];
 }
+
 
 export function getWorkspacesSummaryList(registry: RegisteredWorkspace[]): WorkspaceSummary[] {
   return registry.map(w => {
@@ -457,8 +534,10 @@ export function createDashboardServer(options: DashboardOptions = {}) {
     port = 3456;
   }
   const statePath = resolve(workspaceRoot, process.env.CONTINUITY_STATE_PATH ?? ".continuity/state.json");
-  const registryPath = resolve(options.registryPath ?? process.env.CONTINUITY_REGISTRY_PATH ?? join(workspaceRoot, ".continuity", "workspaces.json"));
-  const registry = loadWorkspaceRegistry(registryPath, workspaceRoot, port);
+  const isExplicitRegistry = Boolean(options.registryPath ?? process.env.CONTINUITY_REGISTRY_PATH);
+  const rawRegistryPath = options.registryPath ?? process.env.CONTINUITY_REGISTRY_PATH ?? join(workspaceRoot, ".continuity", "workspaces.json");
+  const registry = loadWorkspaceRegistry(rawRegistryPath, workspaceRoot, port, isExplicitRegistry);
+
 
   const getTargetWorkspace = (workspaceId?: string | null): { root: string; summary?: RegisteredWorkspace } => {
     if (!workspaceId) {
