@@ -49,8 +49,16 @@ export function isAllowlistedArtifact(workspaceRoot: string, targetPath: string)
 
 export function getGitSummary(workspaceRoot: string): { branch: string; clean: boolean; modifiedFiles: string[] } {
   try {
-    const branch = execSync("git branch --show-current", { cwd: workspaceRoot, encoding: "utf8" }).trim();
-    const statusOut = execSync("git status --porcelain", { cwd: workspaceRoot, encoding: "utf8" }).trim();
+    const branch = execSync("git branch --show-current", {
+      cwd: workspaceRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+    const statusOut = execSync("git status --porcelain", {
+      cwd: workspaceRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
     const modifiedFiles = statusOut
       ? statusOut
           .split("\n")

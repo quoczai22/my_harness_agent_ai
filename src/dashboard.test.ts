@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import {
   createDashboardServer,
+  getGitSummary,
   getWorkspacesSummaryList,
   isAllowlistedArtifact,
   isPathContained,
@@ -82,70 +89,142 @@ test("offline React bundle exists and is compiled by esbuild", () => {
 });
 
 test("CLI flag parser correctly parses --workspace and --port aliases and values", () => {
-  assert.deepEqual(parseDashboardCliArgs(["--workspace", "/path/a", "--port", "4000"]), {
-    workspaceRoot: "/path/a",
-    port: 4000
-  });
+  assert.deepEqual(
+    parseDashboardCliArgs(["--workspace", "/path/a", "--port", "4000"]),
+    {
+      workspaceRoot: "/path/a",
+      port: 4000,
+    },
+  );
   assert.deepEqual(parseDashboardCliArgs(["-w", "/path/b", "-p", "5000"]), {
     workspaceRoot: "/path/b",
-    port: 5000
+    port: 5000,
   });
-  assert.deepEqual(parseDashboardCliArgs(["--workspace=/path/c", "--port=6000"]), {
-    workspaceRoot: "/path/c",
-    port: 6000
-  });
+  assert.deepEqual(
+    parseDashboardCliArgs(["--workspace=/path/c", "--port=6000"]),
+    {
+      workspaceRoot: "/path/c",
+      port: 6000,
+    },
+  );
   assert.deepEqual(parseDashboardCliArgs(["-w=/path/d", "-p=7000"]), {
     workspaceRoot: "/path/d",
-    port: 7000
+    port: 7000,
   });
 });
 
 test("CLI flag parser rejects missing, empty, and invalid flag values", () => {
   // Reject non-integer suffix (e.g. 3456abc)
-  assert.throws(() => parseDashboardCliArgs(["--port=3456abc"]), /Invalid port value for --port/);
-  assert.throws(() => parseDashboardCliArgs(["--port", "3456abc"]), /Invalid port value for --port/);
-  assert.throws(() => parseDashboardCliArgs(["-p=8080xyz"]), /Invalid port value for -p/);
-  assert.throws(() => parseDashboardCliArgs(["-p", "invalid"]), /Invalid port value for -p/);
+  assert.throws(
+    () => parseDashboardCliArgs(["--port=3456abc"]),
+    /Invalid port value for --port/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["--port", "3456abc"]),
+    /Invalid port value for --port/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["-p=8080xyz"]),
+    /Invalid port value for -p/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["-p", "invalid"]),
+    /Invalid port value for -p/,
+  );
 
   // Reject out of range port values
-  assert.throws(() => parseDashboardCliArgs(["--port=99999"]), /Invalid port number for --port/);
-  assert.throws(() => parseDashboardCliArgs(["-p", "70000"]), /Invalid port number for -p/);
+  assert.throws(
+    () => parseDashboardCliArgs(["--port=99999"]),
+    /Invalid port number for --port/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["-p", "70000"]),
+    /Invalid port number for -p/,
+  );
 
   // Reject missing values for flags
-  assert.throws(() => parseDashboardCliArgs(["--workspace"]), /Missing value for flag --workspace/);
-  assert.throws(() => parseDashboardCliArgs(["-w"]), /Missing value for flag -w/);
-  assert.throws(() => parseDashboardCliArgs(["--port"]), /Missing value for flag --port/);
-  assert.throws(() => parseDashboardCliArgs(["-p"]), /Missing value for flag -p/);
-  assert.throws(() => parseDashboardCliArgs(["--workspace", "--port", "3000"]), /Missing value for flag --workspace/);
-  assert.throws(() => parseDashboardCliArgs(["-w", "-p", "3000"]), /Missing value for flag -w/);
-  assert.throws(() => parseDashboardCliArgs(["--port", "-w", "/dir"]), /Missing value for flag --port/);
+  assert.throws(
+    () => parseDashboardCliArgs(["--workspace"]),
+    /Missing value for flag --workspace/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["-w"]),
+    /Missing value for flag -w/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["--port"]),
+    /Missing value for flag --port/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["-p"]),
+    /Missing value for flag -p/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["--workspace", "--port", "3000"]),
+    /Missing value for flag --workspace/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["-w", "-p", "3000"]),
+    /Missing value for flag -w/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["--port", "-w", "/dir"]),
+    /Missing value for flag --port/,
+  );
 
   // Reject empty values with equals sign
-  assert.throws(() => parseDashboardCliArgs(["--workspace="]), /Value for flag --workspace cannot be empty/);
-  assert.throws(() => parseDashboardCliArgs(["-w="]), /Value for flag -w cannot be empty/);
-  assert.throws(() => parseDashboardCliArgs(["--port="]), /Value for flag --port cannot be empty/);
-  assert.throws(() => parseDashboardCliArgs(["-p="]), /Value for flag -p cannot be empty/);
+  assert.throws(
+    () => parseDashboardCliArgs(["--workspace="]),
+    /Value for flag --workspace cannot be empty/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["-w="]),
+    /Value for flag -w cannot be empty/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["--port="]),
+    /Value for flag --port cannot be empty/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["-p="]),
+    /Value for flag -p cannot be empty/,
+  );
 });
 
 test("CLI flag parser rejects unknown arguments and typos", () => {
-  assert.throws(() => parseDashboardCliArgs(["--workspce", "/path"]), /Unknown or invalid argument: "--workspce"/);
-  assert.throws(() => parseDashboardCliArgs(["--unknown"]), /Unknown or invalid argument: "--unknown"/);
-  assert.throws(() => parseDashboardCliArgs(["-x"]), /Unknown or invalid argument: "-x"/);
-  assert.throws(() => parseDashboardCliArgs(["--foo=bar"]), /Unknown or invalid argument: "--foo=bar"/);
-  assert.throws(() => parseDashboardCliArgs(["extra-positional-arg"]), /Unknown or invalid argument: "extra-positional-arg"/);
+  assert.throws(
+    () => parseDashboardCliArgs(["--workspce", "/path"]),
+    /Unknown or invalid argument: "--workspce"/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["--unknown"]),
+    /Unknown or invalid argument: "--unknown"/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["-x"]),
+    /Unknown or invalid argument: "-x"/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["--foo=bar"]),
+    /Unknown or invalid argument: "--foo=bar"/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["extra-positional-arg"]),
+    /Unknown or invalid argument: "extra-positional-arg"/,
+  );
 });
 
 test("dashboard launcher rejects nonexistent workspace and non-directory paths before listen", () => {
   const nonexistent = resolve(".", "nonexistent-test-workspace-dir-xyz");
   assert.throws(
     () => createDashboardServer({ workspaceRoot: nonexistent }),
-    /Workspace directory does not exist/
+    /Workspace directory does not exist/,
   );
 
   const filePath = resolve(".", "package.json");
   assert.throws(
     () => createDashboardServer({ workspaceRoot: filePath }),
-    /Workspace path is not a directory/
+    /Workspace path is not a directory/,
   );
 });
 
@@ -161,16 +240,28 @@ test("dashboard launcher strictly validates PORT environment variable without pa
 
   try {
     process.env.PORT = "3456abc";
-    assert.throws(() => createDashboardServer(), /Invalid port value for PORT environment variable: "3456abc"/);
+    assert.throws(
+      () => createDashboardServer(),
+      /Invalid port value for PORT environment variable: "3456abc"/,
+    );
 
     process.env.PORT = "";
-    assert.throws(() => createDashboardServer(), /Invalid port value for PORT environment variable: ""/);
+    assert.throws(
+      () => createDashboardServer(),
+      /Invalid port value for PORT environment variable: ""/,
+    );
 
     process.env.PORT = "-1";
-    assert.throws(() => createDashboardServer(), /Invalid port value for PORT environment variable: "-1"/);
+    assert.throws(
+      () => createDashboardServer(),
+      /Invalid port value for PORT environment variable: "-1"/,
+    );
 
     process.env.PORT = "70000";
-    assert.throws(() => createDashboardServer(), /Invalid port number for PORT environment variable: 70000/);
+    assert.throws(
+      () => createDashboardServer(),
+      /Invalid port number for PORT environment variable: 70000/,
+    );
 
     process.env.PORT = "3458";
     const dash = createDashboardServer();
@@ -189,38 +280,51 @@ test("CLI process execution: rejects nonexistent workspace and invalid port with
 
   // Nonexistent workspace
   try {
-    execFileSync(process.execPath, [scriptPath, "--workspace", "./nonexistent_workspace_dir_cli"], {
-      encoding: "utf8",
-      stdio: "pipe"
-    });
+    execFileSync(
+      process.execPath,
+      [scriptPath, "--workspace", "./nonexistent_workspace_dir_cli"],
+      {
+        encoding: "utf8",
+        stdio: "pipe",
+      },
+    );
     assert.fail("Should have failed on nonexistent workspace");
   } catch (err: any) {
     assert.equal(err.status, 1);
-    assert.ok(err.stderr.includes("Workspace directory does not exist") || err.stdout.includes("Workspace directory does not exist"));
+    assert.ok(
+      err.stderr.includes("Workspace directory does not exist") ||
+        err.stdout.includes("Workspace directory does not exist"),
+    );
   }
 
   // Invalid port
   try {
     execFileSync(process.execPath, [scriptPath, "--port", "invalid_port_abc"], {
       encoding: "utf8",
-      stdio: "pipe"
+      stdio: "pipe",
     });
     assert.fail("Should have failed on invalid port");
   } catch (err: any) {
     assert.equal(err.status, 1);
-    assert.ok(err.stderr.includes("Invalid port") || err.stdout.includes("Invalid port"));
+    assert.ok(
+      err.stderr.includes("Invalid port") ||
+        err.stdout.includes("Invalid port"),
+    );
   }
 
   // Unknown flag
   try {
     execFileSync(process.execPath, [scriptPath, "--workspce", "."], {
       encoding: "utf8",
-      stdio: "pipe"
+      stdio: "pipe",
     });
     assert.fail("Should have failed on unknown flag");
   } catch (err: any) {
     assert.equal(err.status, 1);
-    assert.ok(err.stderr.includes("Unknown or invalid argument") || err.stdout.includes("Unknown or invalid argument"));
+    assert.ok(
+      err.stderr.includes("Unknown or invalid argument") ||
+        err.stdout.includes("Unknown or invalid argument"),
+    );
   }
 });
 
@@ -321,13 +425,18 @@ test("multi-instance dashboard: distinct workspace roots on distinct ports serve
   mkdirSync(join(ws2, "reports"), { recursive: true });
   writeFileSync(
     join(ws2, ".continuity", "state.json"),
-    JSON.stringify({ projectId: "ws2-multi-instance", stage: "SPEC_READY", tasks: [], blockers: [] }),
-    "utf8"
+    JSON.stringify({
+      projectId: "ws2-multi-instance",
+      stage: "SPEC_READY",
+      tasks: [],
+      blockers: [],
+    }),
+    "utf8",
   );
   writeFileSync(
     join(ws2, "reports", "test-report.json"),
     JSON.stringify({ report: "ws2-custom-data" }),
-    "utf8"
+    "utf8",
   );
 
   const dash1 = createDashboardServer({ workspaceRoot: ws1, port: 0 });
@@ -344,19 +453,29 @@ test("multi-instance dashboard: distinct workspace roots on distinct ports serve
     assert.equal(b2.status, 200);
 
     // Instance 1 serves ws1 state
-    const s1 = await (await fetch(`http://127.0.0.1:${port1}/api/state`)).json();
+    const s1 = await (
+      await fetch(`http://127.0.0.1:${port1}/api/state`)
+    ).json();
     assert.equal(s1.projectId, "harness-agent");
 
     // Instance 2 serves ws2 state
-    const s2 = await (await fetch(`http://127.0.0.1:${port2}/api/state`)).json();
+    const s2 = await (
+      await fetch(`http://127.0.0.1:${port2}/api/state`)
+    ).json();
     assert.equal(s2.projectId, "ws2-multi-instance");
 
     // Instance 2 serves its own allowlisted artifact
-    const a2 = await (await fetch(`http://127.0.0.1:${port2}/api/artifacts?path=reports/test-report.json`)).text();
+    const a2 = await (
+      await fetch(
+        `http://127.0.0.1:${port2}/api/artifacts?path=reports/test-report.json`,
+      )
+    ).text();
     assert.ok(a2.includes("ws2-custom-data"));
 
     // Instance 2 rejects traversal or accessing outside files
-    const bad2 = await fetch(`http://127.0.0.1:${port2}/api/artifacts?path=../package.json`);
+    const bad2 = await fetch(
+      `http://127.0.0.1:${port2}/api/artifacts?path=../package.json`,
+    );
     assert.equal(bad2.status, 403);
   } finally {
     await Promise.all([dash1.stop(), dash2.stop()]);
@@ -426,7 +545,11 @@ test("state containment: /api/state rejects absolute CONTINUITY_STATE_PATH outsi
   const outsideStateDir = resolve("..", "outside-state-dir-test");
   const outsideStatePath = join(outsideStateDir, "state.json");
   mkdirSync(outsideStateDir, { recursive: true });
-  writeFileSync(outsideStatePath, JSON.stringify({ projectId: "outside-state" }), "utf8");
+  writeFileSync(
+    outsideStatePath,
+    JSON.stringify({ projectId: "outside-state" }),
+    "utf8",
+  );
 
   try {
     process.env.CONTINUITY_STATE_PATH = outsideStatePath;
@@ -462,7 +585,11 @@ test("state containment: /api/state rejects absolute CONTINUITY_STATE_PATH outsi
 test("loadWorkspaceRegistry loads valid registry or falls back to default safely", () => {
   const defaultRoot = resolve(".");
   // Nonexistent file -> default single-workspace entry
-  const fallback = loadWorkspaceRegistry("./nonexistent-reg-file.json", defaultRoot, 3456);
+  const fallback = loadWorkspaceRegistry(
+    "./nonexistent-reg-file.json",
+    defaultRoot,
+    3456,
+  );
   assert.equal(fallback.length, 1);
   assert.equal(fallback[0].id, "default");
   assert.equal(fallback[0].path, defaultRoot);
@@ -475,10 +602,15 @@ test("loadWorkspaceRegistry loads valid registry or falls back to default safely
       JSON.stringify({
         workspaces: [
           { id: "ws-a", name: "Workspace Alpha", path: "./", port: 3457 },
-          { id: "ws-b", name: "Workspace Beta", path: "../nonexistent-dir", port: 3458 }
-        ]
+          {
+            id: "ws-b",
+            name: "Workspace Beta",
+            path: "../nonexistent-dir",
+            port: 3458,
+          },
+        ],
       }),
-      "utf8"
+      "utf8",
     );
     const loaded = loadWorkspaceRegistry(tempRegPath, defaultRoot, 3456);
     assert.equal(loaded.length, 2);
@@ -494,24 +626,42 @@ test("loadWorkspaceRegistry loads valid registry or falls back to default safely
 });
 
 test("CLI parser parses and validates --registry and -r flags", () => {
-  assert.deepEqual(parseDashboardCliArgs(["--registry", "./custom-registry.json"]), {
-    registryPath: "./custom-registry.json"
-  });
+  assert.deepEqual(
+    parseDashboardCliArgs(["--registry", "./custom-registry.json"]),
+    {
+      registryPath: "./custom-registry.json",
+    },
+  );
   assert.deepEqual(parseDashboardCliArgs(["-r", "./custom-registry2.json"]), {
-    registryPath: "./custom-registry2.json"
+    registryPath: "./custom-registry2.json",
   });
-  assert.deepEqual(parseDashboardCliArgs(["--registry=./custom-registry3.json"]), {
-    registryPath: "./custom-registry3.json"
-  });
+  assert.deepEqual(
+    parseDashboardCliArgs(["--registry=./custom-registry3.json"]),
+    {
+      registryPath: "./custom-registry3.json",
+    },
+  );
   assert.deepEqual(parseDashboardCliArgs(["-r=./custom-registry4.json"]), {
-    registryPath: "./custom-registry4.json"
+    registryPath: "./custom-registry4.json",
   });
 
   // Rejections
-  assert.throws(() => parseDashboardCliArgs(["--registry"]), /Missing value for flag --registry/);
-  assert.throws(() => parseDashboardCliArgs(["-r"]), /Missing value for flag -r/);
-  assert.throws(() => parseDashboardCliArgs(["--registry="]), /Value for flag --registry cannot be empty/);
-  assert.throws(() => parseDashboardCliArgs(["-r="]), /Value for flag -r cannot be empty/);
+  assert.throws(
+    () => parseDashboardCliArgs(["--registry"]),
+    /Missing value for flag --registry/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["-r"]),
+    /Missing value for flag -r/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["--registry="]),
+    /Value for flag --registry cannot be empty/,
+  );
+  assert.throws(
+    () => parseDashboardCliArgs(["-r="]),
+    /Value for flag -r cannot be empty/,
+  );
 });
 
 test("GET /api/workspaces returns read-only summary for active and unavailable workspaces without crashing", async () => {
@@ -524,29 +674,39 @@ test("GET /api/workspaces returns read-only summary for active and unavailable w
   mkdirSync(join(wsValid, "reports"), { recursive: true });
   writeFileSync(
     join(wsValid, ".continuity", "state.json"),
-    JSON.stringify({ projectId: "alpha-proj", stage: "SPEC_READY", tasks: [{ id: "t1", status: "done" }], blockers: [] }),
-    "utf8"
+    JSON.stringify({
+      projectId: "alpha-proj",
+      stage: "SPEC_READY",
+      tasks: [{ id: "t1", status: "done" }],
+      blockers: [],
+    }),
+    "utf8",
   );
   writeFileSync(
     join(wsValid, "reports", "status.txt"),
     "alpha-report-content",
-    "utf8"
+    "utf8",
   );
   writeFileSync(
     regPath,
     JSON.stringify({
       workspaces: [
         { id: "alpha", name: "Alpha Workspace", path: wsValid, port: 4001 },
-        { id: "beta", name: "Beta Missing Workspace", path: wsMissing, port: 4002 }
-      ]
+        {
+          id: "beta",
+          name: "Beta Missing Workspace",
+          path: wsMissing,
+          port: 4002,
+        },
+      ],
     }),
-    "utf8"
+    "utf8",
   );
 
   const dash = createDashboardServer({
     workspaceRoot: wsValid,
     registryPath: regPath,
-    port: 0
+    port: 0,
   });
   const port = await dash.start();
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -574,21 +734,33 @@ test("GET /api/workspaces returns read-only summary for active and unavailable w
     assert.ok(betaWs.error.includes("does not exist"));
 
     // 2. Querying alpha workspace via ?workspace=alpha
-    const stateAlpha = await (await fetch(`${baseUrl}/api/state?workspace=alpha`)).json();
+    const stateAlpha = await (
+      await fetch(`${baseUrl}/api/state?workspace=alpha`)
+    ).json();
     assert.equal(stateAlpha.projectId, "alpha-proj");
 
-    const artAlpha = await (await fetch(`${baseUrl}/api/artifacts?workspace=alpha`)).json();
+    const artAlpha = await (
+      await fetch(`${baseUrl}/api/artifacts?workspace=alpha`)
+    ).json();
     assert.ok(artAlpha.artifacts.includes("reports/status.txt"));
 
-    const artContent = await (await fetch(`${baseUrl}/api/artifacts?path=reports/status.txt&workspace=alpha`)).text();
+    const artContent = await (
+      await fetch(
+        `${baseUrl}/api/artifacts?path=reports/status.txt&workspace=alpha`,
+      )
+    ).text();
     assert.equal(artContent, "alpha-report-content");
 
     // 3. Containment rejection on registered workspace
-    const trapRes = await fetch(`${baseUrl}/api/artifacts?path=../workspaces.json&workspace=alpha`);
+    const trapRes = await fetch(
+      `${baseUrl}/api/artifacts?path=../workspaces.json&workspace=alpha`,
+    );
     assert.equal(trapRes.status, 403);
 
     // 4. Querying unregistered workspace returns 403
-    const unregRes = await fetch(`${baseUrl}/api/state?workspace=unregistered-unknown`);
+    const unregRes = await fetch(
+      `${baseUrl}/api/state?workspace=unregistered-unknown`,
+    );
     assert.equal(unregRes.status, 403);
 
     // 5. Querying unavailable workspace returns 404
@@ -596,7 +768,10 @@ test("GET /api/workspaces returns read-only summary for active and unavailable w
     assert.equal(unavailRes.status, 404);
 
     // 6. Non-GET/HEAD mutation returns 405 Method Not Allowed
-    const postRes = await fetch(`${baseUrl}/api/workspaces`, { method: "POST", body: "{}" });
+    const postRes = await fetch(`${baseUrl}/api/workspaces`, {
+      method: "POST",
+      body: "{}",
+    });
     assert.equal(postRes.status, 405);
   } finally {
     await dash.stop();
@@ -606,3 +781,87 @@ test("GET /api/workspaces returns read-only summary for active and unavailable w
   }
 });
 
+test("getGitSummary suppresses stderr when inspecting a non-git directory and returns safe fallback", () => {
+  const nonGitDir = resolve("..", "test-non-git-dir-sample");
+  mkdirSync(nonGitDir, { recursive: true });
+
+  const capturedStderr: string[] = [];
+  const origStderrWrite = process.stderr.write.bind(process.stderr);
+  (process.stderr.write as any) = (chunk: any) => {
+    capturedStderr.push(String(chunk));
+    return true;
+  };
+
+  try {
+    const summary = getGitSummary(nonGitDir);
+    assert.deepEqual(summary, {
+      branch: "unknown",
+      clean: true,
+      modifiedFiles: [],
+    });
+    assert.equal(
+      capturedStderr.some((s) =>
+        s.toLowerCase().includes("fatal: not a git repository"),
+      ),
+      false,
+      "Must not emit fatal git error to process stderr",
+    );
+  } finally {
+    process.stderr.write = origStderrWrite;
+    try {
+      rmSync(nonGitDir, { recursive: true, force: true });
+    } catch {}
+  }
+});
+
+test("GET /api/git returns safe summary without stderr for registered non-git workspace", async () => {
+  const tempRegDir = resolve("..", "test-non-git-registry-sample");
+  const wsNonGit = join(tempRegDir, "plain-folder");
+  const regPath = join(tempRegDir, "workspaces.json");
+
+  mkdirSync(wsNonGit, { recursive: true });
+  writeFileSync(
+    regPath,
+    JSON.stringify({
+      workspaces: [
+        {
+          id: "non-git-ws",
+          name: "Non-Git Project",
+          path: wsNonGit,
+          port: 4003,
+        },
+      ],
+    }),
+    "utf8",
+  );
+
+  const dash = createDashboardServer({
+    workspaceRoot: wsNonGit,
+    registryPath: regPath,
+    port: 0,
+  });
+  const port = await dash.start();
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    const res = await fetch(`${baseUrl}/api/git?workspace=non-git-ws`);
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.deepEqual(data, {
+      branch: "unknown",
+      clean: true,
+      modifiedFiles: [],
+    });
+
+    // Verify valid git workspace in current repo returns real git summary
+    const realSummary = getGitSummary(resolve("."));
+    assert.ok(typeof realSummary.branch === "string");
+    assert.notEqual(realSummary.branch, "unknown");
+    assert.ok(typeof realSummary.clean === "boolean");
+  } finally {
+    await dash.stop();
+    try {
+      rmSync(tempRegDir, { recursive: true, force: true });
+    } catch {}
+  }
+});
