@@ -244,6 +244,11 @@ export function createDashboardServer(options: DashboardOptions = {}) {
       res.end(content);
     };
 
+    // Strictly read-only server: reject non-GET/HEAD requests
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      return sendJson({ error: "Method not allowed: server is read-only" }, 405);
+    }
+
     // 1. GET /api/health
     if (pathname === "/api/health") {
       return sendJson({ status: "ok", timestamp: new Date().toISOString() });
@@ -252,6 +257,9 @@ export function createDashboardServer(options: DashboardOptions = {}) {
     // 2. GET /api/state
     if (pathname === "/api/state") {
       try {
+        if (!isPathContained(workspaceRoot, statePath)) {
+          return sendJson({ error: "Access denied: State path is outside workspace" }, 403);
+        }
         if (existsSync(statePath)) {
           const raw = JSON.parse(readFileSync(statePath, "utf8"));
           return sendJson(raw);
@@ -295,14 +303,15 @@ export function createDashboardServer(options: DashboardOptions = {}) {
       }
     }
 
-    // 5. GET /bundle.js (Local offline React bundle)
+    // 5. GET /bundle.js (Local offline React bundle from fixed installation path)
     if (pathname === "/bundle.js" || pathname === "/dist/public/bundle.js") {
+      const moduleDir = dirname(fileURLToPath(import.meta.url));
       const candidates = [
-        join(workspaceRoot, "dist", "public", "bundle.js"),
-        join(dirname(fileURLToPath(import.meta.url)), "public", "bundle.js")
+        join(moduleDir, "public", "bundle.js"),
+        resolve(moduleDir, "..", "dist", "public", "bundle.js")
       ];
       const bundlePath = candidates.find(p => existsSync(p));
-      if (bundlePath && isPathContained(workspaceRoot, bundlePath)) {
+      if (bundlePath) {
         try {
           const js = readFileSync(bundlePath, "utf8");
           return sendContent(js, 200, "application/javascript; charset=utf-8");
