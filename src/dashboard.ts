@@ -219,10 +219,99 @@ export function getDashboardHtml(): string {
 </html>`;
 }
 
+function parsePortValue(val: string, flag: string): number {
+  const trimmed = val.trim();
+  if (!trimmed || !/^\d+$/.test(trimmed)) {
+    throw new Error(`Invalid port value for ${flag}: "${val}". Port must be a valid integer between 0 and 65535.`);
+  }
+  const num = Number(trimmed);
+  if (!Number.isSafeInteger(num) || num < 0 || num > 65535) {
+    throw new Error(`Invalid port number for ${flag}: ${num}. Port must be between 0 and 65535.`);
+  }
+  return num;
+}
+
+export function parseDashboardCliArgs(args: string[]): DashboardOptions {
+  const options: DashboardOptions = {};
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--workspace" || arg === "-w") {
+      if (i + 1 >= args.length || args[i + 1].startsWith("-")) {
+        throw new Error(`Missing value for flag ${arg}`);
+      }
+      const val = args[++i];
+      if (!val || !val.trim()) {
+        throw new Error(`Value for flag ${arg} cannot be empty`);
+      }
+      options.workspaceRoot = val;
+    } else if (arg.startsWith("--workspace=")) {
+      const val = arg.slice("--workspace=".length);
+      if (!val || !val.trim()) {
+        throw new Error("Value for flag --workspace cannot be empty");
+      }
+      options.workspaceRoot = val;
+    } else if (arg.startsWith("-w=")) {
+      const val = arg.slice("-w=".length);
+      if (!val || !val.trim()) {
+        throw new Error("Value for flag -w cannot be empty");
+      }
+      options.workspaceRoot = val;
+    } else if (arg === "--port" || arg === "-p") {
+      if (i + 1 >= args.length || args[i + 1].startsWith("-")) {
+        throw new Error(`Missing value for flag ${arg}`);
+      }
+      const val = args[++i];
+      if (!val || !val.trim()) {
+        throw new Error(`Value for flag ${arg} cannot be empty`);
+      }
+      options.port = parsePortValue(val, arg);
+    } else if (arg.startsWith("--port=")) {
+      const val = arg.slice("--port=".length);
+      if (!val || !val.trim()) {
+        throw new Error("Value for flag --port cannot be empty");
+      }
+      options.port = parsePortValue(val, "--port");
+    } else if (arg.startsWith("-p=")) {
+      const val = arg.slice("-p=".length);
+      if (!val || !val.trim()) {
+        throw new Error("Value for flag -p cannot be empty");
+      }
+      options.port = parsePortValue(val, "-p");
+    } else {
+      throw new Error(`Unknown or invalid argument: "${arg}"`);
+    }
+  }
+  return options;
+}
+
 export function createDashboardServer(options: DashboardOptions = {}) {
-  const workspaceRoot = resolve(options.workspaceRoot ?? process.env.CONTINUITY_WORKSPACE_PATH ?? process.cwd());
+  const rawWorkspace = options.workspaceRoot ?? process.env.CONTINUITY_WORKSPACE_PATH ?? process.cwd();
+  const workspaceRoot = resolve(rawWorkspace);
+
+  if (!existsSync(workspaceRoot)) {
+    throw new Error(`Workspace directory does not exist: ${workspaceRoot}`);
+  }
+  try {
+    if (!statSync(workspaceRoot).isDirectory()) {
+      throw new Error(`Workspace path is not a directory: ${workspaceRoot}`);
+    }
+  } catch (err: any) {
+    if (err.message.includes("is not a directory")) throw err;
+    throw new Error(`Cannot access workspace directory: ${workspaceRoot}`);
+  }
+
+  let port: number;
+  if (options.port !== undefined) {
+    if (typeof options.port !== "number" || !Number.isSafeInteger(options.port) || options.port < 0 || options.port > 65535) {
+      throw new Error(`Invalid port: ${options.port}. Port must be an integer between 0 and 65535.`);
+    }
+    port = options.port;
+  } else if (process.env.PORT !== undefined) {
+    port = parsePortValue(process.env.PORT, "PORT environment variable");
+  } else {
+    port = 3456;
+  }
   const statePath = resolve(workspaceRoot, process.env.CONTINUITY_STATE_PATH ?? ".continuity/state.json");
-  const port = options.port ?? (process.env.PORT ? parseInt(process.env.PORT, 10) : 3456);
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
@@ -354,8 +443,17 @@ export function createDashboardServer(options: DashboardOptions = {}) {
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
-  const dashboard = createDashboardServer();
-  dashboard.start().then(port => {
-    console.log(`[Continuity Dashboard] Running on http://127.0.0.1:${port}`);
-  });
+  try {
+    const cliOptions = parseDashboardCliArgs(process.argv.slice(2));
+    const dashboard = createDashboardServer(cliOptions);
+    dashboard.start().then(actualPort => {
+      console.log(`[Continuity Dashboard] Running on http://127.0.0.1:${actualPort} (workspace: ${dashboard.workspaceRoot})`);
+    }).catch((err: any) => {
+      console.error(`[Continuity Dashboard Error] ${err?.message || String(err)}`);
+      process.exit(1);
+    });
+  } catch (err: any) {
+    console.error(`[Continuity Dashboard Error] ${err?.message || String(err)}`);
+    process.exit(1);
+  }
 }
