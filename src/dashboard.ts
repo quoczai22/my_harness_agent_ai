@@ -17,6 +17,7 @@ export interface WorkspaceSummary {
   path: string;
   port?: number;
   status: "ACTIVE" | "UNAVAILABLE";
+  instanceHealth?: "ONLINE" | "OFFLINE" | "UNKNOWN";
   error?: string;
   stage?: string;
   currentChangeId?: string | null;
@@ -24,6 +25,7 @@ export interface WorkspaceSummary {
   blockersCount?: number;
   gitClean?: boolean;
 }
+
 
 export interface DashboardOptions {
   workspaceRoot?: string;
@@ -206,8 +208,36 @@ export function loadWorkspaceRegistry(
 }
 
 
-export function getWorkspacesSummaryList(registry: RegisteredWorkspace[]): WorkspaceSummary[] {
-  return registry.map(w => {
+export async function probeWorkspaceInstanceHealth(
+  port?: number,
+  timeoutMs = 800
+): Promise<"ONLINE" | "OFFLINE" | "UNKNOWN"> {
+  if (typeof port !== "number" || !Number.isSafeInteger(port) || port <= 0 || port > 65535) {
+    return "UNKNOWN";
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      signal: controller.signal,
+      headers: { "Accept": "application/json" }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.status === "ok") {
+        return "ONLINE";
+      }
+    }
+    return "OFFLINE";
+  } catch {
+    return "OFFLINE";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function getWorkspacesSummaryList(registry: RegisteredWorkspace[]): Promise<WorkspaceSummary[]> {
+  const promises = registry.map(async (w): Promise<WorkspaceSummary> => {
     const canonicalPath = resolve(w.path);
     if (!existsSync(canonicalPath)) {
       return {
@@ -216,6 +246,7 @@ export function getWorkspacesSummaryList(registry: RegisteredWorkspace[]): Works
         path: canonicalPath,
         port: w.port,
         status: "UNAVAILABLE",
+        instanceHealth: "UNKNOWN",
         error: "Workspace directory does not exist"
       };
     }
@@ -227,6 +258,7 @@ export function getWorkspacesSummaryList(registry: RegisteredWorkspace[]): Works
           path: canonicalPath,
           port: w.port,
           status: "UNAVAILABLE",
+          instanceHealth: "UNKNOWN",
           error: "Workspace path is not a directory"
         };
       }
@@ -237,6 +269,7 @@ export function getWorkspacesSummaryList(registry: RegisteredWorkspace[]): Works
         path: canonicalPath,
         port: w.port,
         status: "UNAVAILABLE",
+        instanceHealth: "UNKNOWN",
         error: "Cannot access workspace directory"
       };
     }
@@ -257,6 +290,7 @@ export function getWorkspacesSummaryList(registry: RegisteredWorkspace[]): Works
     }
 
     const git = getGitSummary(canonicalPath);
+    const instanceHealth = await probeWorkspaceInstanceHealth(w.port);
 
     return {
       id: w.id,
@@ -264,6 +298,7 @@ export function getWorkspacesSummaryList(registry: RegisteredWorkspace[]): Works
       path: canonicalPath,
       port: w.port,
       status: "ACTIVE",
+      instanceHealth,
       stage,
       currentChangeId,
       tasksCount,
@@ -271,7 +306,10 @@ export function getWorkspacesSummaryList(registry: RegisteredWorkspace[]): Works
       gitClean: git.clean
     };
   });
+
+  return Promise.all(promises);
 }
+
 
 export function getDashboardHtml(): string {
   return `<!DOCTYPE html>
@@ -586,9 +624,10 @@ export function createDashboardServer(options: DashboardOptions = {}) {
 
     // 2. GET /api/workspaces (Registry list & status summary)
     if (pathname === "/api/workspaces") {
-      const summaries = getWorkspacesSummaryList(registry);
+      const summaries = await getWorkspacesSummaryList(registry);
       return sendJson({ workspaces: summaries });
     }
+
 
     // 3. GET /api/state
     if (pathname === "/api/state") {

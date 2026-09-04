@@ -17,6 +17,7 @@ import {
   isPathContained,
   loadWorkspaceRegistry,
   parseDashboardCliArgs,
+  probeWorkspaceInstanceHealth,
   validateWorkspaceRegistryData,
 } from "./dashboard.js";
 
@@ -1037,4 +1038,99 @@ test("template .continuity/workspaces.example.json exists and passes validation"
   const validated = validateWorkspaceRegistryData(json, templatePath);
   assert.ok(validated.length >= 1);
   assert.equal(validated[0].id, "harness-agent");
+});
+
+test("probeWorkspaceInstanceHealth correctly detects ONLINE, OFFLINE, and UNKNOWN statuses", async () => {
+  // 1. UNKNOWN for invalid/missing ports
+  assert.equal(await probeWorkspaceInstanceHealth(undefined), "UNKNOWN");
+  assert.equal(await probeWorkspaceInstanceHealth(-1), "UNKNOWN");
+  assert.equal(await probeWorkspaceInstanceHealth(0), "UNKNOWN");
+  assert.equal(await probeWorkspaceInstanceHealth(70000), "UNKNOWN");
+
+  // 2. OFFLINE on closed/unused loopback port
+  assert.equal(await probeWorkspaceInstanceHealth(59977), "OFFLINE");
+
+  // 3. ONLINE when an instance server is actively running on loopback
+  const liveServer = createDashboardServer({ port: 0 });
+  const livePort = await liveServer.start();
+  try {
+    const health = await probeWorkspaceInstanceHealth(livePort);
+    assert.equal(health, "ONLINE");
+  } finally {
+    await liveServer.stop();
+  }
+});
+
+test("GET /api/workspaces reports ONLINE/OFFLINE instanceHealth in parallel with SSRF protection", async () => {
+  const tempRegDir = resolve("..", "test-health-overview-registry");
+  const ws1 = join(tempRegDir, "ws-online");
+  const ws2 = join(tempRegDir, "ws-offline");
+  const regPath = join(tempRegDir, "workspaces.json");
+
+  mkdirSync(ws1, { recursive: true });
+  mkdirSync(ws2, { recursive: true });
+
+  // Start live second instance for ws1
+  const secondInstance = createDashboardServer({ workspaceRoot: ws1, port: 0 });
+  const livePort = await secondInstance.start();
+
+  writeFileSync(
+    regPath,
+    JSON.stringify({
+      workspaces: [
+        {
+          id: "online-ws",
+          name: "Online Workspace",
+          path: ws1,
+          port: livePort,
+        },
+        { id: "offline-ws", name: "Offline Workspace", path: ws2, port: 59988 },
+      ],
+    }),
+    "utf8",
+  );
+
+  const mainDashboard = createDashboardServer({
+    workspaceRoot: ws1,
+    registryPath: regPath,
+    port: 0,
+  });
+  const mainPort = await mainDashboard.start();
+  const baseUrl = `http://127.0.0.1:${mainPort}`;
+
+  try {
+    const startTime = Date.now();
+    // Verify GET /api/workspaces with potential SSRF query parameter injections
+    const res = await fetch(
+      `${baseUrl}/api/workspaces?target=http://evil.com&host=10.0.0.1&port=8080`,
+    );
+    const elapsed = Date.now() - startTime;
+    assert.equal(res.status, 200);
+    // Bounded execution time (parallel probes, well below hanging threshold)
+    assert.ok(
+      elapsed < 2000,
+      `Execution took ${elapsed}ms, expected bounded latency`,
+    );
+
+    const data = await res.json();
+    assert.ok(Array.isArray(data.workspaces));
+    assert.equal(data.workspaces.length, 2);
+
+    const onlineItem = data.workspaces.find((w: any) => w.id === "online-ws");
+    assert.ok(onlineItem);
+    assert.equal(onlineItem.status, "ACTIVE");
+    assert.equal(onlineItem.instanceHealth, "ONLINE");
+    assert.equal(onlineItem.port, livePort);
+
+    const offlineItem = data.workspaces.find((w: any) => w.id === "offline-ws");
+    assert.ok(offlineItem);
+    assert.equal(offlineItem.status, "ACTIVE");
+    assert.equal(offlineItem.instanceHealth, "OFFLINE");
+    assert.equal(offlineItem.port, 59988);
+  } finally {
+    await Promise.all([mainDashboard.stop(), secondInstance.stop()]);
+    try {
+      rmSync(tempRegDir, { recursive: true, force: true });
+    } catch {}
+  }
 });

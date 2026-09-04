@@ -174,6 +174,23 @@ export const App: React.FC = () => {
                   </div>
                 ) : (
                   <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "4px" }}>
+                    {ws.instanceHealth === "ONLINE" ? (
+                      <span className="badge badge-green mono" style={{ fontSize: "0.7rem" }}>
+                        ● Online :{ws.port}
+                      </span>
+                    ) : ws.instanceHealth === "OFFLINE" ? (
+                      <span className="badge badge-amber mono" style={{ fontSize: "0.7rem" }}>
+                        ○ Offline :{ws.port}
+                      </span>
+                    ) : ws.port ? (
+                      <span className="badge badge-blue mono" style={{ fontSize: "0.7rem" }}>
+                        port: {ws.port}
+                      </span>
+                    ) : (
+                      <span className="badge badge-blue mono" style={{ fontSize: "0.7rem" }}>
+                        – No Port
+                      </span>
+                    )}
                     <span className="badge badge-blue mono" style={{ fontSize: "0.7rem" }}>
                       Stage: {ws.stage || "IDLE"}
                     </span>

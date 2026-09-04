@@ -28,7 +28,14 @@ export interface Decision {
 export interface WorkflowState {
   projectId: string;
   currentChangeId: string | null;
-  stage: "IDLE" | "SPEC_READY" | "CHECKPOINT_1" | "IMPL_IN_PROGRESS" | "IMPL_DONE" | "CHECKPOINT_2" | "DONE";
+  stage:
+    | "IDLE"
+    | "SPEC_READY"
+    | "CHECKPOINT_1"
+    | "IMPL_IN_PROGRESS"
+    | "IMPL_DONE"
+    | "CHECKPOINT_2"
+    | "DONE";
   tasks: WorkflowTask[];
   checkpoints: Checkpoint[];
   blockers: string[];
@@ -48,6 +55,7 @@ export interface WorkspaceSummary {
   path: string;
   port?: number;
   status: "ACTIVE" | "UNAVAILABLE";
+  instanceHealth?: "ONLINE" | "OFFLINE" | "UNKNOWN";
   error?: string;
   stage?: string;
   currentChangeId?: string | null;
@@ -55,4 +63,3 @@ export interface WorkspaceSummary {
   blockersCount?: number;
   gitClean?: boolean;
 }
-
