@@ -1,0 +1,94 @@
+{
+  "name": "continuity-vscode",
+  "displayName": "Continuity Workflow",
+  "description": "Offline, read-only Continuity workflow views with an explicit local Ollama helper.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "quoczai22",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onView:continuity.workflow",
+    "onCommand:continuity.refresh",
+    "onCommand:continuity.openTimeline",
+    "onCommand:continuity.summarizeWithOllama"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "continuity",
+          "title": "Continuity",
+          "icon": "media/continuity.svg"
+        }
+      ]
+    },
+    "views": {
+      "continuity": [
+        {
+          "id": "continuity.workflow",
+          "name": "Workflow"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "continuity.refresh",
+        "title": "Continuity: Refresh Workflow"
+      },
+      {
+        "command": "continuity.openTimeline",
+        "title": "Continuity: Open Timeline"
+      },
+      {
+        "command": "continuity.summarizeWithOllama",
+        "title": "Continuity: Summarize with Local Ollama"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "continuity.refresh",
+          "when": "view == continuity.workflow",
+          "group": "navigation"
+        },
+        {
+          "command": "continuity.openTimeline",
+          "when": "view == continuity.workflow",
+          "group": "navigation@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Continuity",
+      "properties": {
+        "continuity.ollamaModel": {
+          "type": "string",
+          "default": "",
+          "description": "Optional local Ollama model. The helper only calls http://127.0.0.1:11434 after you run its command."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/**/*.test.js",
+    "package": "npm run build && vsce package --out continuity-workflow.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "@types/vscode": "^1.95.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^7.0.2"
+  },
+  "repository": {
+    "url": "https://github.com/quoczai22/my_harness_agent_ai.git",
+    "type": "git"
+  }
+}
