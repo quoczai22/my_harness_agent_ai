@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 import { ContinuityState, createOllamaSummaryPayload, extractTimeline, readWorkspaceState } from "./state";
+import { requestOllama, requestOpenAI } from "./providers";
 
+const OPENAI_KEY_SECRET = "continuity.openaiApiKey";
 const OLLAMA_URL = "http://127.0.0.1:11434/api/generate";
 
 class WorkflowProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
@@ -33,7 +35,15 @@ function renderTimeline(state: ContinuityState | undefined): string {
 
 function escapeHtml(value: string): string { return value.replace(/[&<>'"]/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", "\"": "&quot;" })[character] ?? character); }
 
-async function requestOllamaSummary(state: ContinuityState | undefined): Promise<string> {
+async function requestOllamaSummary(state: ContinuityState | undefined, secrets: vscode.SecretStorage): Promise<string> {
+  const provider = vscode.workspace.getConfiguration("continuity").get<string>("summaryProvider", "ollama");
+  if (provider === "openai") {
+    const confirmed = await vscode.window.showWarningMessage("This sends a bounded workflow summary to OpenAI. Continue?", { modal: true }, "Continue");
+    if (confirmed !== "Continue") throw new Error("OpenAI request cancelled.");
+    const key = await secrets.get(OPENAI_KEY_SECRET);
+    if (!key) throw new Error("Set an OpenAI API key first.");
+    return requestOpenAI(state, vscode.workspace.getConfiguration("continuity").get<string>("openaiModel", "gpt-6-astra"), key);
+  }
   const model = vscode.workspace.getConfiguration("continuity").get<string>("ollamaModel", "").trim();
   if (!model) throw new Error("Set Continuity: Ollama Model before using the local helper.");
   const controller = new AbortController();
@@ -58,7 +68,7 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(vscode.commands.registerCommand("continuity.refresh", refresh));
   context.subscriptions.push(vscode.commands.registerCommand("continuity.openTimeline", () => { const panel = vscode.window.createWebviewPanel("continuity.timeline", "Continuity Timeline", vscode.ViewColumn.Beside, { enableScripts: false }); panel.webview.html = renderTimeline(cachedState); }));
   context.subscriptions.push(vscode.commands.registerCommand("continuity.summarizeWithOllama", async () => {
-    try { const summary = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Asking local Ollama" }, () => requestOllamaSummary(cachedState)); vscode.window.showInformationMessage(summary); }
+    try { const summary = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Asking local Ollama" }, () => requestOllamaSummary(cachedState, context.secrets)); vscode.window.showInformationMessage(summary); }
     catch (error) { vscode.window.showErrorMessage(error instanceof Error ? error.message : "Local Ollama is unavailable."); }
   }));
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(refresh));

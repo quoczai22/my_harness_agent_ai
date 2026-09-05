@@ -49,6 +49,14 @@
       {
         "command": "continuity.summarizeWithOllama",
         "title": "Continuity: Summarize with Local Ollama"
+      },
+      {
+        "command": "continuity.setOpenAIKey",
+        "title": "Continuity: Set OpenAI API Key"
+      },
+      {
+        "command": "continuity.clearOpenAIKey",
+        "title": "Continuity: Clear OpenAI API Key"
       }
     ],
     "menus": {
@@ -72,6 +80,20 @@
           "type": "string",
           "default": "",
           "description": "Optional local Ollama model. The helper only calls http://127.0.0.1:11434 after you run its command."
+        },
+        "continuity.summaryProvider": {
+          "type": "string",
+          "enum": [
+            "ollama",
+            "openai"
+          ],
+          "default": "ollama",
+          "description": "Summary provider. OpenAI is opt-in."
+        },
+        "continuity.openaiModel": {
+          "type": "string",
+          "default": "gpt-6-astra",
+          "description": "OpenAI model used when OpenAI provider is selected."
         }
       }
     }
