@@ -229,14 +229,17 @@ export class Store {
       cp.status = decision;
       cp.reasoning = reasoning;
       cp.decidedAt = now();
-      state.stage =
-        cp.type === "spec_review"
-          ? decision === "APPROVED"
-            ? "IMPL_IN_PROGRESS"
-            : "SPEC_READY"
-          : decision === "APPROVED"
-            ? "DONE"
-            : "IMPL_IN_PROGRESS";
+      if (cp.type === "spec_review") {
+        state.stage = decision === "APPROVED" ? "IMPL_IN_PROGRESS" : "SPEC_READY";
+      } else if (decision === "APPROVED") {
+        // One locked, fresh-state transaction preserves history while closing the active lifecycle.
+        state.tasks = state.tasks.map(task => task.changeId === cp.changeId ? { ...task, status: "done" as const } : task);
+        state.currentChangeId = null;
+        state.stage = "IDLE";
+        state.decisions.push({ timestamp: now(), actor: "system", decision: `complete_change:${cp.changeId}`, reasoning: "Implementation review approved; all change tasks completed." });
+      } else {
+        state.stage = "IMPL_IN_PROGRESS";
+      }
       state.decisions.push({ timestamp: now(), actor: "reviewer", decision, reasoning });
       this.save(state);
       return { ok: true, newStage: state.stage };
@@ -305,6 +308,7 @@ export class Store {
       return { ok: true };
     });
   }
+
 
   raiseDiscussion(topic: string, rationale: string) {
     return this.withLock(() => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 
 const testState = ".continuity/test-unit-state.json";
 process.env.CONTINUITY_STATE_PATH = testState;
@@ -19,7 +19,7 @@ test("enforces checkpoints and scope checks", () => {
   assert.equal(store.checkScope("t1", "refactor home page", "test").verdict, "OUT_OF_SCOPE");
   store.setStatus("IMPL_DONE", "implemented", ["login.ts"]);
   const cp2 = store.requestCheckpoint("demo", "impl_review", "review");
-  assert.equal(store.approveCheckpoint(cp2.checkpointId, "APPROVED", "approved").newStage, "DONE");
+  assert.equal(store.approveCheckpoint(cp2.checkpointId, "APPROVED", "approved").newStage, "IDLE");
 });
 
 test("enforces blocker gate on checkpoint approval", () => {
@@ -56,19 +56,9 @@ test("enforces universal blocker gate on setStatus transitions (including non-te
   store.resolveDiscussion("mid-impl-blocker", "Resolved implementation blocker");
   assert.equal(store.setStatus("IMPL_DONE", "completed task", ["task.ts"]).ok, true);
 
-  // Progress to DONE stage
+  // Approved implementation review atomically returns the workflow to IDLE.
   const cp2 = store.requestCheckpoint("transition-blocker-demo", "impl_review", "review");
   store.approveCheckpoint(cp2.checkpointId, "APPROVED", "approved");
-  assert.equal(store.getStatus().stage, "DONE");
-
-  // 2. Block transition from DONE -> IDLE (a valid transition that is not IMPL_DONE/DONE) when blocker exists
-  store.raiseDiscussion("post-done-audit-blocker", "Audit discussion raised at DONE stage");
-  assert.throws(() => store.setStatus("IDLE", "attempt reset to idle"), /blocker/i);
-  assert.equal(store.getStatus().stage, "DONE");
-
-  // Resolve blocker, transition to IDLE must now succeed
-  store.resolveDiscussion("post-done-audit-blocker", "Audit resolved");
-  assert.equal(store.setStatus("IDLE", "reset to idle").ok, true);
   assert.equal(store.getStatus().stage, "IDLE");
 });
 
@@ -96,4 +86,45 @@ test("reloads fresh disk state across independent Store instances (no stale cach
 
   // store2 must see the approval
   assert.equal(store2.getStatus().stage, "IMPL_IN_PROGRESS");
+});
+
+
+test("approved implementation review atomically completes history and allows the next change", () => {
+  if (existsSync(testState)) rmSync(testState);
+  const writer = new Store("test");
+  const observer = new Store("test");
+  writer.registerTask("completed-change", [
+    { id: "t1", description: "First task", keywords: ["first", "task"] },
+    { id: "t2", description: "Second task", keywords: ["second", "task"] }
+  ]);
+  const spec = writer.requestCheckpoint("completed-change", "spec_review", "ready");
+  writer.approveCheckpoint(spec.checkpointId, "APPROVED", "spec accepted");
+  writer.setStatus("IMPL_DONE", "implemented", ["src/store.ts"]);
+  const review = writer.requestCheckpoint("completed-change", "impl_review", "ready for review");
+  assert.equal(observer.approveCheckpoint(review.checkpointId, "APPROVED", "implementation accepted").newStage, "IDLE");
+
+  const persisted = JSON.parse(readFileSync(testState, "utf8")) as { currentChangeId: string | null; stage: string; tasks: { changeId: string; status: string }[]; checkpoints: { id: string; status: string }[]; decisions: { decision: string }[] };
+  assert.equal(persisted.currentChangeId, null);
+  assert.equal(persisted.stage, "IDLE");
+  assert.deepEqual(persisted.tasks.filter(task => task.changeId === "completed-change").map(task => task.status), ["done", "done"]);
+  assert.equal(persisted.checkpoints.find(checkpoint => checkpoint.id === review.checkpointId)?.status, "APPROVED");
+  assert.ok(persisted.decisions.some(entry => entry.decision === "complete_change:completed-change"));
+  assert.equal(observer.getStatus().stage, "IDLE");
+  observer.registerTask("next-change", [{ id: "next", description: "Next change", keywords: ["next", "change"] }]);
+  assert.equal(writer.getStatus().currentChangeId, "next-change");
+});
+
+test("rejected implementation review keeps active tasks pending and returns to implementation", () => {
+  if (existsSync(testState)) rmSync(testState);
+  const store = new Store("test");
+  store.registerTask("rejected-change", [{ id: "t1", description: "Task", keywords: ["task", "review"] }]);
+  const spec = store.requestCheckpoint("rejected-change", "spec_review", "ready");
+  store.approveCheckpoint(spec.checkpointId, "APPROVED", "spec accepted");
+  store.setStatus("IMPL_DONE", "implemented", ["src/store.ts"]);
+  const review = store.requestCheckpoint("rejected-change", "impl_review", "review");
+  assert.equal(store.approveCheckpoint(review.checkpointId, "REJECTED", "needs revision").newStage, "IMPL_IN_PROGRESS");
+  const persisted = JSON.parse(readFileSync(testState, "utf8")) as { currentChangeId: string | null; tasks: { changeId: string; status: string }[]; checkpoints: { id: string; status: string }[] };
+  assert.equal(persisted.currentChangeId, "rejected-change");
+  assert.deepEqual(persisted.tasks.filter(task => task.changeId === "rejected-change").map(task => task.status), ["pending"]);
+  assert.equal(persisted.checkpoints.find(checkpoint => checkpoint.id === review.checkpointId)?.status, "REJECTED");
 });

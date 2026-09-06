@@ -65,7 +65,7 @@ test("multi-process OS test with 3 distinct Node processes (different PIDs) veri
   assert.ok(outB.checkpointId);
   assert.equal(outB.pass, true);
 
-  // 3. Process C: Confirm changes from B, approve impl_review, and verify DONE
+  // 3. Process C: Confirm changes from B, approve impl_review, and verify IDLE
   const scriptC = `
     import('./dist/store.js').then(({ Store }) => {
       const store = new Store('mp-test');
@@ -80,7 +80,7 @@ test("multi-process OS test with 3 distinct Node processes (different PIDs) veri
         statePath: process.env.CONTINUITY_STATE_PATH,
         stage: finalStatus.stage,
         pass: true,
-        message: 'PASS: Process C confirmed changes from B, approved impl_review, and verified final stage DONE.'
+        message: 'PASS: Process C confirmed changes from B, approved impl_review, and verified final stage IDLE.'
       }));
     });
   `;
@@ -89,7 +89,7 @@ test("multi-process OS test with 3 distinct Node processes (different PIDs) veri
   console.log(`[Process C] PID: ${outC.pid} | State: ${outC.statePath} | ${outC.message}`);
   assert.notEqual(outC.pid, outA.pid, "Process C must have a different PID than Process A");
   assert.notEqual(outC.pid, outB.pid, "Process C must have a different PID than Process B");
-  assert.equal(outC.stage, "DONE");
+  assert.equal(outC.stage, "IDLE");
   assert.equal(outC.pass, true);
 
   if (existsSync(tempStatePath)) {
