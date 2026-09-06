@@ -1,6 +1,14 @@
 import * as vscode from "vscode";
 import { ContinuityState, createOllamaSummaryPayload, extractTimeline, readWorkspaceState } from "./state";
 import { requestOllama, requestOpenAI } from "./providers";
+import { AssistantStore } from "./assistantStore";
+import { SessionsViewProvider, ChatViewProvider, ComposerViewProvider } from "./sidebarViews";
+import { queryOfflineOllama } from "./ollamaClient";
+import { DEFAULT_OLLAMA_MODEL } from "./assistant";
+import { activeEditorContext } from "./assistant/workspace";
+import { readActiveWorkspaceContext } from "./contextGuard";
+import { applyDiffWithConfirmation } from "./diffManager";
+import { splitAssistantResponse } from "./chatResponse";
 
 const OPENAI_KEY_SECRET = "continuity.openaiApiKey";
 const OLLAMA_URL = "http://127.0.0.1:11434/api/generate";
@@ -59,8 +67,7 @@ async function requestOllamaSummary(state: ContinuityState | undefined, secrets:
 export async function activate(context: vscode.ExtensionContext) {
   let cachedState = await readWorkspaceState(activeFolder());
   const provider = new WorkflowProvider(() => cachedState);
-  context.subscriptions.push(vscode.window.registerTreeDataProvider("continuity.workflow", provider));
-  const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  context.subscriptions.push(vscode.window.registerTreeDataProvider("continuity.workflow", provider));  const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   status.command = "continuity.refresh";
   context.subscriptions.push(status);
 
@@ -71,6 +78,74 @@ export async function activate(context: vscode.ExtensionContext) {
     try { const summary = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Asking local Ollama" }, () => requestOllamaSummary(cachedState, context.secrets)); vscode.window.showInformationMessage(summary); }
     catch (error) { vscode.window.showErrorMessage(error instanceof Error ? error.message : "Local Ollama is unavailable."); }
   }));
+
+  // Offline Code Assistant Initialization
+  const assistantStore = new AssistantStore(context.workspaceState);
+  let composerProvider: ComposerViewProvider;
+
+  const onApplyDiff = async (diff: string, targetFile: string) => {
+    const activeEditor = vscode.window.activeTextEditor;
+    if (!activeEditor) {
+      vscode.window.showErrorMessage("No active editor to apply diff to.");
+      return;
+    }
+    const confirmed = await vscode.window.showWarningMessage(
+      `Apply proposed diff to ${targetFile || activeEditor.document.fileName}?`,
+      { modal: true },
+      "Apply Diff"
+    );
+    if (confirmed === "Apply Diff") {
+      const result = await applyDiffWithConfirmation(activeEditor.document.uri, diff, true);
+      if (result.applied) {
+        vscode.window.showInformationMessage(result.message);
+      } else {
+        vscode.window.showErrorMessage(result.message);
+      }
+    }
+  };
+
+  composerProvider = new ComposerViewProvider(onApplyDiff);
+
+  const onSendPrompt = async (prompt: string, selectionOnly: boolean) => {
+    let currentSession = assistantStore.getState().sessions.find(s => s.id === assistantStore.getState().activeSessionId);
+    if (!currentSession) currentSession = await assistantStore.createSession("New Chat");
+    try {
+      // All source context flows through Context Guard; it enforces containment and bounded reads.
+      const safe = await activeEditorContext(selectionOnly);
+      await assistantStore.addMessage(currentSession.id, { sender: "user", text: `${prompt}\n\n[Safe ${safe.label} context attached]` });
+      const relativePath = vscode.workspace.asRelativePath(safe.uri, false).replace(/\\/g, "/");
+      const model = vscode.workspace.getConfiguration("continuity").get<string>("offlineAssistantModel", DEFAULT_OLLAMA_MODEL).trim() || DEFAULT_OLLAMA_MODEL;
+      const fullPrompt = `You are an offline code reviewer. Answer the user's request first in clear natural language. Do not claim you changed files. Context is bounded and safe.\n\n${safe.label} (${safe.language}):\n\`\`\`${safe.language}\n${safe.text}\n\`\`\`\n\nUser request: ${prompt}\n\nAn edit is optional. Only after your normal-language answer, if one safe edit is useful, append exactly one JSON code block with {"path":"${relativePath}","original":"exact unique source text","replacement":"new text"}. Never propose edits to a different path.`;
+      const response = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Querying local Ollama (${model})` }, () => queryOfflineOllama(fullPrompt, { model }));
+      const parsed = splitAssistantResponse(response.response, relativePath);
+      await assistantStore.addMessage(currentSession.id, { sender: "assistant", text: parsed.answer });
+      if (parsed.proposal) composerProvider.setProposedDiff(JSON.stringify(parsed.proposal), relativePath);
+    } catch (err: any) {
+      await assistantStore.addMessage(currentSession.id, { sender: "system", text: `Error: ${err?.message ?? err}` });
+      vscode.window.showErrorMessage(err?.message ?? "Ollama query failed.");
+    }
+  };
+  const sessionsProvider = new SessionsViewProvider(assistantStore);
+  const chatProvider = new ChatViewProvider(assistantStore, onSendPrompt);
+
+  context.subscriptions.push(vscode.window.registerWebviewViewProvider(SessionsViewProvider.viewType, sessionsProvider));
+  context.subscriptions.push(vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider));
+  context.subscriptions.push(vscode.window.registerWebviewViewProvider(ComposerViewProvider.viewType, composerProvider));
+
+  context.subscriptions.push(vscode.commands.registerCommand("continuity.assistant.rebuildStyleProfile", async () => {
+    const contextData = await readActiveWorkspaceContext(activeFolder());
+    const profile = await assistantStore.rebuildStyleProfile(contextData.files);
+    vscode.window.showInformationMessage(`Style Profile Rebuilt: ${profile.indentation}, ${profile.quotes} quotes, semi:${profile.semicolons} (from ${profile.extractedFromFilesCount} files).`);
+    chatProvider.refresh();
+  }));
+
+  context.subscriptions.push(vscode.commands.registerCommand("continuity.assistant.clearSessions", async () => {
+    await assistantStore.clearAllSessions();
+    sessionsProvider.refresh();
+    chatProvider.refresh();
+    vscode.window.showInformationMessage("All assistant sessions cleared.");
+  }));
+
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(refresh));
   await refresh();
 }

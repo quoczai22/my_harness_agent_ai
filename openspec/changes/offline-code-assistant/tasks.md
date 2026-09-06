@@ -1,0 +1,8 @@
+# Tasks: Offline Code Assistant
+
+- [x] `task-1-workspace-file-context-guard`: Implement defensive workspace file reader with strict ignore filtering (.git, node_modules, dist, .env, binary files), file size limits, and context truncation guards. [keywords: workspace reader, ignore filtering, context boundary, file limits]
+- [x] `task-2-ollama-client-loopback-isolation`: Build loopback-only Ollama API adapter restricted to 127.0.0.1:11434 with qwen2.5-coder:7b target, timeout guards, and strict offline network containment. [keywords: ollama client, qwen2.5-coder, loopback isolation, 127.0.0.1:11434]
+- [x] `task-3-local-session-and-style-profile-store`: Implement local session history and coding style profile store with persistence, session clear, and style profile rebuild actions. [keywords: session store, style profile, local storage, profile rebuild]
+- [x] `task-4-sidebar-webview-sessions-chat-composer`: Develop VS Code sidebar webview providers for Sessions, Chat, and Composer with secure Content-Security-Policy. [keywords: sidebar webview, chat provider, composer panel, content security policy]
+- [x] `task-5-diff-composer-and-explicit-apply`: Implement proposed diff viewer and interactive confirmation modal for code changes, enforcing no-auto-write and explicit user Apply action. [keywords: diff viewer, apply confirmation, vscode workspace-edit, diff review]
+- [x] `task-6-test-suite-and-packaging-validation`: Add comprehensive unit tests for ignore filtering, context bounds, loopback network security, diff confirmation, and style profile lifecycle. [keywords: unit tests, security assertions, context tests, vsix validation]

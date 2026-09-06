@@ -1,8 +1,8 @@
 {
   "name": "continuity-vscode",
   "displayName": "Continuity Workflow",
-  "description": "Offline, read-only Continuity workflow views with an explicit local Ollama helper.",
-  "version": "0.1.0",
+  "description": "Offline, read-only Continuity workflow views with an explicit local Ollama helper and Offline Code Assistant.",
+  "version": "0.2.0",
   "private": true,
   "publisher": "quoczai22",
   "license": "MIT",
@@ -15,9 +15,14 @@
   "main": "./dist/extension.js",
   "activationEvents": [
     "onView:continuity.workflow",
+    "onView:continuity.assistant.sessions",
+    "onView:continuity.assistant.chat",
+    "onView:continuity.assistant.composer",
     "onCommand:continuity.refresh",
     "onCommand:continuity.openTimeline",
-    "onCommand:continuity.summarizeWithOllama"
+    "onCommand:continuity.summarizeWithOllama",
+    "onCommand:continuity.assistant.rebuildStyleProfile",
+    "onCommand:continuity.assistant.clearSessions"
   ],
   "contributes": {
     "viewsContainers": {
@@ -34,6 +39,21 @@
         {
           "id": "continuity.workflow",
           "name": "Workflow"
+        },
+        {
+          "type": "webview",
+          "id": "continuity.assistant.sessions",
+          "name": "Assistant: Sessions"
+        },
+        {
+          "type": "webview",
+          "id": "continuity.assistant.chat",
+          "name": "Assistant: Chat"
+        },
+        {
+          "type": "webview",
+          "id": "continuity.assistant.composer",
+          "name": "Assistant: Composer"
         }
       ]
     },
@@ -41,6 +61,14 @@
       {
         "command": "continuity.refresh",
         "title": "Continuity: Refresh Workflow"
+      },
+      {
+        "command": "continuity.assistant.rebuildStyleProfile",
+        "title": "Assistant: Rebuild Style Profile"
+      },
+      {
+        "command": "continuity.assistant.clearSessions",
+        "title": "Assistant: Clear All Sessions"
       },
       {
         "command": "continuity.openTimeline",
@@ -94,12 +122,17 @@
           "type": "string",
           "default": "gpt-6-astra",
           "description": "OpenAI model used when OpenAI provider is selected."
+        },
+        "continuity.offlineAssistantModel": {
+          "type": "string",
+          "default": "qwen2.5-coder:7b",
+          "description": "Local model for Offline Assistant. Requests are restricted to Ollama at 127.0.0.1:11434."
         }
       }
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "test": "npm run build && node --test dist/**/*.test.js",
     "package": "npm run build && vsce package --out continuity-workflow.vsix"
   },
