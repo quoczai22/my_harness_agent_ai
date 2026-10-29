@@ -5,3 +5,7 @@ The user-supplied `openspec/changes/web-test1-offline-kit-3gb/reference/Ghi-chep
 ## Implementation status (2026-10-30)
 
 All six tasks implemented; awaiting implementation review. Evidence and limitations: `reports/web-test1-3gb-verification.md`. Offline self-test 71/71; live runs on two schemas recorded in the kit's `tests/results/`. No commit or push.
+
+## Deferred (2026-10-30)
+
+Implementation review rejected by the user, then the change was deferred in continuity: the course moved to Flutter and ASP.NET is no longer used. No further work planned. The work order stays in `tasks/active/` because it was never accepted.
