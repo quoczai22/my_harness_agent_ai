@@ -17,14 +17,14 @@ Build a new, independent portable terminal kit `artifacts/Continuity-Flutter-Exa
 ## Out of scope
 
 - Writing into the user's project, running the app, emulators, device builds, or `flutter pub get` from the Internet.
-- Shipping the Flutter SDK. It is optional and detected on the machine (see open question 3).
+- ~~Shipping the Flutter SDK~~. Superseded by the 2026-10-30 amendment in `design.md`: the user approved bundling an offline SDK.
 - Cloud models, Ollama, and changes to the Web-Test1 kit or the VS Code extension.
 - Handwriting recognition. Scanned typed exams only, and only if measured accuracy is acceptable (task 3).
 
 ## User answers (2026-10-30)
 
-1. Exam content: the user does not know. Keep the generic assumption below, and replace it with the authoritative notes once they are supplied.
-2. Authoritative notes: they exist. The file still has to be supplied, then bundled as a hash-pinned snapshot.
+1. Exam content: the user does not know. Keep the generic assumption below; there are no notes to replace it.
+2. Authoritative notes: none (updated later the same day). The user adapts to each exam, so the confirmed exam text is the only source of truth, and `/check` derives its conditional items from the exam wording.
 3. Flutter SDK on the exam PC: unknown, and the user wants the kit to be prepared for both cases. A bundled offline SDK option needs a download approved by the user.
 4. Project shape: unknown. Keep detecting null safety and warning on older projects.
 

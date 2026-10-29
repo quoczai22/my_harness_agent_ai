@@ -8,7 +8,8 @@ The Web-Test1 kit, the VS Code extension and user projects were not modified. LM
 - The user asked to "do everything automatically until complete" right after the spec was written.
 - User answers for open questions 1–4: exam content unknown; authoritative notes exist but have not been supplied yet; SDK on the exam PC unknown, so "prepare for it"; project shape unknown. The implementation keeps the generic assumptions until the notes arrive.
 - The user approved downloading the Flutter SDK ("Cho phép tải"). That led to the bundled-SDK amendment in `design.md`.
-- No continuity checkpoint was recorded. Continuity allows a single active change, and `lm-studio-portable-offline` is still waiting at CHECKPOINT_2.
+- Continuity (2026-10-30): the user approved `lm-studio-portable-offline` ("duyệt"); afterwards the Flutter change was registered, its spec review was recorded as approved from the user's earlier instructions, and the implementation review `cp_1793301381073_3vdrj` was approved by the user ("Duyệt"); the change is closed.
+- The user has no authoritative Flutter notes and adapts to each exam; the confirmed exam text is the source of truth.
 
 ## What was built
 

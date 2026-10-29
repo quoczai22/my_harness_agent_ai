@@ -15,3 +15,11 @@ Implemented; awaiting spec confirmation (open questions 1–4) and implementatio
 ## Update (2026-10-30, after user answers)
 
 User answers: exam content and project shape unknown; authoritative Flutter notes exist (file not yet supplied); SDK on exam PC unknown, so prepare for it; download approved. Bundled Flutter 3.47.8 SDK and offline pub cache added, plus a compile-repair loop in `/file`. Offline self-test 121/121; live: 9/10 AI-written files and 3/4 projects compile after repair. Still open: authoritative notes, continuity checkpoints (blocked by the pending `lm-studio-portable-offline` review), target-hardware trial.
+
+## Continuity (2026-10-30)
+
+User approved `lm-studio-portable-offline`. Flutter change registered; spec review approved (recorded from the user's instructions); implementation review `cp_1793301381073_3vdrj` is PENDING. The user has no authoritative notes: the exam text is the source of truth. Remaining: user's implementation review and a target-hardware trial.
+
+## Accepted (2026-10-30)
+
+Implementation review `cp_1793301381073_3vdrj` approved by the user ("Duyệt"); the change is closed in continuity. Accepted with open limitations: the app is never run by the kit, analysis covers only cached packages and null-safe projects, and a target-hardware trial (school PC, 8 GB RAM, clean offline PC, phone photos) is still to be done.
