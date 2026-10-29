@@ -90,8 +90,8 @@
     "files":  [
                   {
                       "path":  ".gitignore",
-                      "bytes":  167,
-                      "sha256":  "b5fa94afe1e013a069dc6aefb9a03b91d22c8c2232160be241463efc3a82c30a"
+                      "bytes":  190,
+                      "sha256":  "369d7e211569ca9ad17846afbb24279f747837fecec055a326d8d60f52b60281"
                   },
                   {
                       "path":  "config.json",
@@ -99,9 +99,19 @@
                       "sha256":  "62515f5cd78b3fbd1829b8f78c05fd2770babb6f9e4a9ef272c91de300321ff9"
                   },
                   {
+                      "path":  "FIELD-TRIAL.md",
+                      "bytes":  3088,
+                      "sha256":  "e0dc1dd1be671131e0f8dd043152662613e8f9299c010ff7ed31d8070dda2d84"
+                  },
+                  {
                       "path":  "Flutter-Exam.ps1",
                       "bytes":  11417,
                       "sha256":  "ce68634211b28f9fa58917c99b1951ebb340942467906050087c8c38ae74273b"
+                  },
+                  {
+                      "path":  "lib/FieldTrial.ps1",
+                      "bytes":  9493,
+                      "sha256":  "908d23fea854e638a15dc9d5afb51d991cc1ee21896fc27eff5a9459eb44c151"
                   },
                   {
                       "path":  "lib/FlutterExam.ps1",
@@ -115,8 +125,18 @@
                   },
                   {
                       "path":  "README.md",
-                      "bytes":  6508,
-                      "sha256":  "a3258dd4820a97f4d6f31c4e147afa5777ea3224dddbfb23a3e02b5d94f0a503"
+                      "bytes":  7025,
+                      "sha256":  "b074b8ccd9249af1086317c293bd324233146a8bf26cd47e8bde42da4ba8e20a"
+                  },
+                  {
+                      "path":  "Run-Field-Trial.cmd",
+                      "bytes":  123,
+                      "sha256":  "33e1ad93af50c00f7814eda7d88da5d2b591d8abbf97d7a58c5c2427b14e06f2"
+                  },
+                  {
+                      "path":  "Run-Field-Trial.ps1",
+                      "bytes":  8747,
+                      "sha256":  "1b0b2bc2aa5843f5fafeeb7a85ae3e9661f8a76488090cf8fc803c33c55f4023"
                   },
                   {
                       "path":  "Start-Flutter-Exam.cmd",
@@ -229,9 +249,24 @@
                       "sha256":  "5dd7a1b78fc340ddb1e20e1c62dcbb4dddde48d9c2a68432f1ce2267be09dfce"
                   },
                   {
+                      "path":  "tests/results/live-20261030-030332.md",
+                      "bytes":  9532,
+                      "sha256":  "2776a4e1bf2423bdce7d029ccd73690fd1f3354f8baab1cd34b1de50e00df4d2"
+                  },
+                  {
+                      "path":  "tests/results/live-20261030-031604.md",
+                      "bytes":  12005,
+                      "sha256":  "d3c98b701bb346d6c7a03708de1569789e1af89c79ff89629cc23cdc5059781f"
+                  },
+                  {
+                      "path":  "tests/results/live-20261030-032729.md",
+                      "bytes":  10950,
+                      "sha256":  "6c0f957d85d1e72cb12b28fff5fe8e53b2e88663994c13dcdd846add0a9d9fb8"
+                  },
+                  {
                       "path":  "tests/Test-FlutterExam.ps1",
-                      "bytes":  44608,
-                      "sha256":  "52abcef40616fdcb5789634c607fc4d83735953a66ca39b5efb0bb48bad07dae"
+                      "bytes":  48000,
+                      "sha256":  "cff3ddb05d7053af794d772750c0bcad2cbef41586ab3eb4d25364c0a27e9ab3"
                   },
                   {
                       "path":  "tools/pdf/api-ms-win-core-console-l1-1-0.dll",

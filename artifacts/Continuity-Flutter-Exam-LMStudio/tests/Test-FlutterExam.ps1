@@ -3,6 +3,7 @@
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 . (Join-Path (Split-Path $PSScriptRoot -Parent) 'lib\FlutterExam.ps1')
+. (Join-Path (Split-Path $PSScriptRoot -Parent) 'lib\FieldTrial.ps1')
 Import-LmConfig (Join-Path $script:KitRoot 'config.json')
 
 $fixtures = Join-Path $PSScriptRoot 'fixtures'
@@ -326,6 +327,33 @@ try {
     Assert ($quickOnly.tested -and !$quickOnly.errors.Count -and $quickOnly.quickFixes.Count -ge 4) "real compile errors fixed by quick fixes alone: $($quickOnly.history -join ' -> ') ($($quickOnly.quickFixes -join '; '))"
     $env:PATH = $savedPath
   } else { Write-Host '  skip: kit has no bundled SDK (sdk\flutter)' }
+
+  Section 'field trial tooling'
+  $truthText = "Câu 1: Tạo LoginScreen. Email phải có @; mật khẩu tối thiểu 6 ký tự.`nChuyển sang '/note_list'.`n{""title"": ""Học Flutter"", ""priority"": 2}"
+  $facts = @(Get-CriticalFacts $truthText)
+  Assert (@($facts | Where-Object { $_.kind -eq 'tên lớp' -and $_.value -eq 'LoginScreen' }).Count -and @($facts | Where-Object { $_.kind -eq 'route' -and $_.value -eq '/note_list' }).Count -and @($facts | Where-Object { $_.kind -eq 'khóa JSON' -and $_.value -eq 'priority' }).Count -and @($facts | Where-Object { $_.kind -eq 'số' -and $_.value -eq '6' }).Count -and @($facts | Where-Object { $_.value -eq '@' }).Count) 'critical facts: class, route, JSON key, number, @'
+  $perfect = Compare-Transcript $truthText $truthText
+  Assert ($perfect.wordRecall -eq 1 -and $perfect.factsFound -eq $perfect.factsTotal -and !$perfect.missing.Count) 'identical transcript scores 1.0 and all facts'
+  $misread = Compare-Transcript $truthText ($truthText.Replace('6 ký tự','8 ký tự').Replace('LoginScreen','LogInScreen').Replace('@','a'))
+  Assert ($misread.factAccuracy -lt 1 -and ($misread.missing -join ';') -match 'LoginScreen' -and ($misread.missing -join ';') -match 'số: 6' -and ($misread.missing -join ';') -match '@') 'misread number, class name and @ are reported as missing facts'
+  Assert ((Get-WordRecall 'a b c d' 'a b') -eq 0.5) 'word recall counts source words found'
+  $machine = Get-MachineConditions
+  Assert ($machine.ramGB -gt 0 -and $machine.cpu -and $null -ne $machine.avx2) 'machine conditions read'
+  $net = Get-NetworkEvidence
+  Assert ($null -ne $net.offline -and $null -ne $net.adaptersUp) 'network evidence collected without sending traffic'
+  $pathEv = Get-PathEvidence
+  Assert (@($pathEv.tools.Keys) -join ',' -eq 'flutter,dart,git') 'PATH evidence covers flutter, dart and git'
+  $integrity = Test-KitIntegrity $script:KitRoot
+  Assert ($integrity.checked -gt 100 -and $null -ne $integrity.ok) "kit integrity checked against manifest ($($integrity.checked) files)"
+  $fakeKit = [pscustomobject]@{ ok=$true; checked=1; problems=@() }
+  $target = Get-TrialVerdict ([pscustomobject]@{ ramGB=7.9; avx2=$true; cpu='x' }) ([pscustomobject]@{ offline=$true }) ([pscustomobject]@{ clean=$true; tools=[ordered]@{ flutter=''; dart=''; git='' } }) $fakeKit $true $true $true
+  Assert ($target.status -eq 'run') 'all target conditions observed -> run'
+  $prep = Get-TrialVerdict ([pscustomobject]@{ ramGB=15.6; avx2=$true; cpu='x' }) ([pscustomobject]@{ offline=$false }) ([pscustomobject]@{ clean=$false; tools=[ordered]@{ flutter=''; dart=''; git='C:\git.exe' } }) $fakeKit $false $true $true
+  Assert ($prep.status -eq 'not run' -and @($prep.conditions | Where-Object { !$_.met }).Count -eq 4) 'preparation PC (16 GB, online, git, synthetic PDF) -> not run with each unmet condition listed'
+  $phase = Measure-TrialPhase 'probe' { Start-Sleep -Milliseconds 700; 42 } 200
+  Assert ($phase.result -eq 42 -and $phase.samples -ge 2 -and $phase.peakTotalMB -gt 0 -and $phase.minFreeMB -gt 0 -and !$phase.error) 'phase measurement samples memory and returns the phase result'
+  $failing = Measure-TrialPhase 'fail' { throw 'boom' } 200
+  Assert ($failing.error -eq 'boom' -and $null -eq $failing.result) 'phase errors are recorded, not thrown'
 
   Section 'language'
   $cjk = -join @([char]0x4F60, [char]0x597D)

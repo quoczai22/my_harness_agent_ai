@@ -5,3 +5,4 @@ tools/pdf/*.dll
 sessions/
 drafts/
 tests/results/drafts-*/
+tests/results/trial-*/

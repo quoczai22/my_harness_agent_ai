@@ -36,6 +36,10 @@ Kit terminal giúp ôn thi lập trình ứng dụng Flutter: đọc đề bài 
 - Đọc ảnh scan bằng model 2B có thể sai; chữ viết tay không được hỗ trợ.
 - Bộ công cụ PDF trong `tools/pdf` là Poppler 26.09.0 (GPL), chép từ kit LM Studio; xem `tools/pdf/NOTICE.txt` và `COPYING-GPL-2.0.txt`. Các DLL đi kèm có giấy phép riêng, cần đối chiếu trước khi phát hành lại kit.
 
+## Chạy thử trên máy thật (nghiệm thu)
+
+Xem `FIELD-TRIAL.md`. `Run-Field-Trial.cmd -Pdf <đề chụp.pdf> -Transcript <bản chép tay.txt> -PhonePhoto` đo điều kiện máy, RAM và thời gian từng giai đoạn, độ chính xác đọc đề, cùng kết quả sinh code, rồi ghi `report.md` vào `tests\results\trial-<thời gian>\` (git bỏ qua thư mục này). Báo cáo chỉ ghi `RUN` khi đủ mọi điều kiện của máy đích; còn thiếu điều kiện nào thì ghi `NOT RUN`.
+
 ## Kiểm thử
 
 ```
