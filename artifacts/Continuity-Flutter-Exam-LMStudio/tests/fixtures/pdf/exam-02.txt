@@ -1,0 +1,7 @@
+ĐỀ 02 - ỨNG DỤNG GHI CHÚ
+Câu 1: Tạo màn hình LoginScreen gồm ô email và mật khẩu.
+Email không được để trống và phải có ký tự @; mật khẩu tối thiểu 6 ký tự.
+Câu 2: Đăng nhập thành công thì chuyển sang NoteListScreen (StatefulWidget)
+hiển thị danh sách ghi chú, có nút thêm ghi chú mới bằng setState.
+Câu 3: Mỗi ghi chú có dạng JSON:
+{"title": "Học Flutter", "done": false, "priority": 2}
