@@ -13,6 +13,18 @@ export function validateLmStudioEndpoint(value: string): string {
 
 export interface LmStudioModel { id: string; }
 
+/** Refuse image input unless the local native API identifies a loaded vision model. */
+export async function assertLoadedVisionModel(endpoint: string, modelId: string): Promise<void> {
+  const base = validateLmStudioEndpoint(endpoint).replace(/\/v1$/, "");
+  const response = await fetch(`${base}/api/v1/models`, { signal: AbortSignal.timeout(3_000), redirect: "error" });
+  if (!response.ok) throw new Error(`Cannot check LM Studio vision capability (HTTP ${response.status}).`);
+  const body = await response.json() as { models?: Array<{ key?: unknown; capabilities?: { vision?: unknown }; loaded_instances?: Array<{ id?: unknown }> }> };
+  if (!Array.isArray(body.models)) throw new Error("LM Studio did not report model capabilities; image request stopped.");
+  const selected = body.models.find(item => item.key === modelId || item.loaded_instances?.some(instance => instance.id === modelId));
+  if (!selected || !selected.loaded_instances?.length) throw new Error("Selected LM Studio model is not loaded; image request stopped.");
+  if (selected.capabilities?.vision !== true) throw new Error("Selected LM Studio model does not report vision support; image request stopped.");
+}
+
 export async function listLocalLmStudioModels(endpoint = DEFAULT_LM_STUDIO_URL): Promise<LmStudioModel[]> {
   const base = validateLmStudioEndpoint(endpoint);
   const response = await fetch(`${base}/models`, { signal: AbortSignal.timeout(3_000), redirect: "error" });
@@ -27,6 +39,7 @@ export async function queryLocalLmStudio(prompt: string, options: {
   const base = validateLmStudioEndpoint(options.endpoint ?? DEFAULT_LM_STUDIO_URL);
   const model = options.model.trim();
   if (!model) throw new Error("Select a loaded LM Studio model in Continuity settings.");
+  if (options.imageDataUrl) await assertLoadedVisionModel(options.endpoint ?? DEFAULT_LM_STUDIO_URL, model);
   const timeoutMs = options.timeoutMs ?? 90_000;
   if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 900_000) throw new Error("Invalid LM Studio timeout.");
   const response = await fetch(`${base}/chat/completions`, {

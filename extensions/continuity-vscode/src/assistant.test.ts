@@ -12,7 +12,25 @@ import {
   MAX_FILE_SIZE_BYTES,
   MAX_CONTEXT_BYTES
 } from "./assistant";
-import { AssistantStore } from "./assistantStore";
+import { AssistantStore, parsePortableSessions } from "./assistantStore";
+
+test("portable sessions round-trip with explicit merge and reject malformed exports", async () => {
+  const first: Record<string, unknown> = {};
+  const memento = (data: Record<string, unknown>) => ({ get: <T>(key: string) => data[key] as T | undefined, update: async (key: string, value: unknown) => { data[key] = value; } });
+  const source = new AssistantStore(memento(first));
+  const session = await source.createSession("Portable");
+  await source.addMessage(session.id, { sender: "user", text: "Continue offline" });
+  await source.setPendingAgentTask(session.id, "Read project file");
+  const exportBytes = source.exportSessions();
+  const parsed = parsePortableSessions(exportBytes);
+  const destination = new AssistantStore(memento({}));
+  await destination.importSessions(parsed, "merge");
+  assert.equal(destination.getState().sessions[0].messages[0].text, "Continue offline");
+  assert.equal(destination.getState().sessions[0].pendingAgentTask, "Read project file");
+  await destination.importSessions(parsed, "merge");
+  assert.equal(destination.getState().sessions.length, 1);
+  assert.throws(() => parsePortableSessions(new TextEncoder().encode('{"schema":2,"sessions":[]}')), /Unsupported/);
+});
 
 test("pending agent question survives store reload and clears after resumption", async () => {
   const data: Record<string, unknown> = {};

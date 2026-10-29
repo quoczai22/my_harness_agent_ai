@@ -69,6 +69,14 @@
         "title": "Assistant: Clear All Sessions"
       },
       {
+        "command": "continuity.assistant.exportSessions",
+        "title": "Assistant: Export Sessions"
+      },
+      {
+        "command": "continuity.assistant.importSessions",
+        "title": "Assistant: Import Sessions"
+      },
+      {
         "command": "continuity.openTimeline",
         "title": "Continuity: Open Timeline"
       },

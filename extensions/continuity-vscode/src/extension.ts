@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { ContinuityState, createOllamaSummaryPayload, extractTimeline, readWorkspaceState } from "./state";
 import { requestOllama, requestOpenAI } from "./providers";
-import { AssistantStore } from "./assistantStore";
+import { AssistantStore, parsePortableSessions } from "./assistantStore";
 import { SessionsViewProvider, ChatViewProvider, ComposerViewProvider } from "./sidebarViews";
 import { ensureLocalOllamaService, queryOfflineOllama } from "./ollamaClient";
 import { queryLocalLmStudio } from "./lmStudioClient";
@@ -124,6 +124,27 @@ export async function activate(context: vscode.ExtensionContext) {
   const assistantStore = new AssistantStore(context.workspaceState);
   const workspaceIndexManager = new WorkspaceIndexManager(context.workspaceState);
   let composerProvider: ComposerViewProvider;
+
+  context.subscriptions.push(vscode.commands.registerCommand("continuity.assistant.exportSessions", async () => {
+    try {
+      const destination = await vscode.window.showSaveDialog({ saveLabel: "Export sessions", filters: { JSON: ["json"] }, defaultUri: vscode.Uri.file("continuity-sessions.json") });
+      if (!destination) return;
+      await vscode.workspace.fs.writeFile(destination, assistantStore.exportSessions());
+      vscode.window.showInformationMessage(`Exported ${assistantStore.getState().sessions.length} sessions.`);
+    } catch (error) { vscode.window.showErrorMessage(error instanceof Error ? error.message : "Session export failed."); }
+  }));
+  context.subscriptions.push(vscode.commands.registerCommand("continuity.assistant.importSessions", async () => {
+    try {
+      const selected = await vscode.window.showOpenDialog({ canSelectMany: false, filters: { JSON: ["json"] }, openLabel: "Choose session export" });
+      if (!selected?.[0]) return;
+      const sessions = parsePortableSessions(await vscode.workspace.fs.readFile(selected[0]));
+      const choice = await vscode.window.showWarningMessage(`Import ${sessions.length} sessions? Existing sessions: ${assistantStore.getState().sessions.length}.`, { modal: true }, "Merge", "Replace");
+      if (choice !== "Merge" && choice !== "Replace") return;
+      await assistantStore.importSessions(sessions, choice === "Merge" ? "merge" : "replace");
+      sessionsProvider?.refresh();
+      vscode.window.showInformationMessage(`Imported ${sessions.length} sessions.`);
+    } catch (error) { vscode.window.showErrorMessage(error instanceof Error ? error.message : "Session import failed."); }
+  }));
 
   const onApplyDiff = async (diff: string, targetFile: string) => {
     const activeEditor = vscode.window.activeTextEditor;

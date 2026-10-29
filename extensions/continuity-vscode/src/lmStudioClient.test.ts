@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { queryLocalLmStudio, validateLmStudioEndpoint } from "./lmStudioClient";
+import { assertLoadedVisionModel, queryLocalLmStudio, validateLmStudioEndpoint } from "./lmStudioClient";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
@@ -25,10 +25,16 @@ test("LM Studio request stays local and uses OpenAI chat format", async () => {
 });
 
 test("image request is embedded for a local vision model", async () => {
-  globalThis.fetch = async (_input, init) => {
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/api/v1/models")) return new Response(JSON.stringify({ models: [{ key: "vision-model", loaded_instances: [{ id: "vision-model" }], capabilities: { vision: true } }] }), { status: 200 });
     const body = JSON.parse(String(init?.body));
     assert.equal(body.messages[0].content[1].image_url.url, "data:image/png;base64,AA==");
     return new Response(JSON.stringify({ choices: [{ message: { content: "image seen" } }] }), { status: 200 });
   };
   assert.equal(await queryLocalLmStudio("read image", { model: "vision-model", imageDataUrl: "data:image/png;base64,AA==" }), "image seen");
+});
+
+test("image request rejects a model without reported vision capability", async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({ models: [{ key: "text-model", loaded_instances: [{ id: "text-model" }], capabilities: { vision: false } }] }), { status: 200 });
+  await assert.rejects(() => assertLoadedVisionModel("http://127.0.0.1:1234", "text-model"), /does not report vision/);
 });

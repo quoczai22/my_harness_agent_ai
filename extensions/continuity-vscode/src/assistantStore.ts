@@ -30,6 +30,23 @@ export interface AssistantPersistedState {
 }
 
 const STORAGE_KEY = "offline_code_assistant_state";
+const MAX_PORTABLE_SESSION_BYTES = 1_000_000;
+
+export function parsePortableSessions(bytes: Uint8Array): ChatSession[] {
+  if (bytes.byteLength > MAX_PORTABLE_SESSION_BYTES) throw new Error("Session export exceeds 1 MB.");
+  let document: unknown;
+  try { document = JSON.parse(new TextDecoder().decode(bytes)); } catch { throw new Error("Invalid session JSON."); }
+  const value = document as { schema?: unknown; sessions?: unknown };
+  if (!value || value.schema !== 1 || !Array.isArray(value.sessions) || value.sessions.length > 100) throw new Error("Unsupported session export format.");
+  for (const session of value.sessions) {
+    if (!session || typeof session.id !== "string" || typeof session.title !== "string" || typeof session.createdAt !== "string" || !Array.isArray(session.messages) || session.messages.length > 500) throw new Error("Invalid session data.");
+    if (session.pendingAgentTask !== undefined && (typeof session.pendingAgentTask !== "string" || session.pendingAgentTask.length > 12_000)) throw new Error("Invalid pending agent task.");
+    for (const message of session.messages) {
+      if (!message || typeof message.id !== "string" || !["user", "assistant", "system"].includes(message.sender) || typeof message.text !== "string" || typeof message.timestamp !== "string") throw new Error("Invalid session message.");
+    }
+  }
+  return value.sessions as ChatSession[];
+}
 
 export class AssistantStore {
   constructor(private readonly memento: MementoLike) {}
@@ -45,6 +62,21 @@ export class AssistantStore {
 
   private async saveState(state: AssistantPersistedState): Promise<void> {
     await this.memento.update(STORAGE_KEY, state);
+  }
+
+  exportSessions(): Uint8Array {
+    const bytes = new TextEncoder().encode(JSON.stringify({ schema: 1, sessions: this.getState().sessions }));
+    if (bytes.byteLength > MAX_PORTABLE_SESSION_BYTES) throw new Error("Sessions exceed the 1 MB portable export limit.");
+    return bytes;
+  }
+
+  async importSessions(sessions: ChatSession[], mode: "merge" | "replace"): Promise<void> {
+    const state = this.getState();
+    const merged = mode === "replace" ? sessions : [...state.sessions, ...sessions.filter(item => !state.sessions.some(existing => existing.id === item.id))];
+    if (merged.length > 100) throw new Error("Import would exceed 100 sessions.");
+    state.sessions = merged;
+    state.activeSessionId = merged[0]?.id ?? null;
+    await this.saveState(state);
   }
 
   async createSession(title = "New Chat"): Promise<ChatSession> {
