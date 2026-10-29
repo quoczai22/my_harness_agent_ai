@@ -5,3 +5,24 @@ dist/
 .env
 .env.*
 !.env.example
+# Machine-local runtime state and private study material
+.continuity/harness/
+tmp/
+
+# Large staged kit payloads (models, runtimes, SDKs, user material). Kit sources stay tracked.
+artifacts/Continuity-Lite-Terminal-Kit-1GB/
+artifacts/Continuity-Lite-Terminal-Kit-3GB/
+artifacts/Continuity-Lite-Terminal-Kit2/
+artifacts/Continuity-Offline-Kit/
+artifacts/Continuity-Offline-Kit-v2/
+artifacts/Harness-LMStudio-Offline-Kit/
+artifacts/model-quarantine/
+artifacts/poppler-extract/
+artifacts/poppler-windows.zip
+artifacts/Continuity-Web-Test1-3GB/bin/
+artifacts/Continuity-Web-Test1-3GB/models/
+artifacts/Continuity-Web-Test1-3GB/tools/
+artifacts/Continuity-Web-Test1-3GB/sessions/
+artifacts/Continuity-Web-Test1-3GB/drafts/
+artifacts/Continuity-Web-Test1-3GB/learning-library/
+artifacts/Continuity-Web-Test1-3GB/reference-examples/
