@@ -125,6 +125,11 @@ server.registerTool(
 );
 
 server.registerTool(
+  "defer_change",
+  { description: "Defer the active change with a human-provided audit reason.", inputSchema: { reason: z.string().min(1) } },
+  async input => { try { return text(store.deferChange(input.reason)); } catch (e) { return failed(e); } }
+);
+server.registerTool(
   "raise_discussion",
   {
     description: "Raise a blocking discussion on the active change.",

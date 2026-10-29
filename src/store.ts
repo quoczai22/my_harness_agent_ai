@@ -309,6 +309,17 @@ export class Store {
     });
   }
 
+  deferChange(reason: string) {
+    return this.withLock(() => {
+      const state = this.load();
+      if (!reason.trim()) throw new Error("A deferral reason is required.");
+      if (!state.currentChangeId || state.stage === "IDLE" || state.stage === "CHECKPOINT_1" || state.stage === "CHECKPOINT_2") throw new Error("Only an active change without a pending checkpoint can be deferred.");
+      const changeId = state.currentChangeId;
+      state.decisions.push({ timestamp: now(), actor: "human", decision: `defer_change:${changeId}`, reasoning: reason.trim() });
+      state.currentChangeId = null; state.stage = "IDLE"; this.save(state);
+      return { ok: true, deferredChangeId: changeId };
+    });
+  }
 
   raiseDiscussion(topic: string, rationale: string) {
     return this.withLock(() => {

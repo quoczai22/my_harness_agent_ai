@@ -88,6 +88,26 @@ test("reloads fresh disk state across independent Store instances (no stale cach
   assert.equal(store2.getStatus().stage, "IMPL_IN_PROGRESS");
 });
 
+test("defers an active change with audit while preserving its tasks", () => {
+  if (existsSync(testState)) rmSync(testState);
+  const store = new Store("test");
+  store.registerTask("defer-demo", [{ id: "t1", description: "Task 1", keywords: ["task", "defer"] }]);
+  assert.throws(() => store.deferChange(""), /reason/i);
+  const result = store.deferChange("Prioritize offline assistant first");
+  assert.equal(result.deferredChangeId, "defer-demo");
+  const state = store.getStatus();
+  assert.equal(state.stage, "IDLE");
+  assert.equal((JSON.parse(readFileSync(testState, "utf8")) as { tasks: { changeId: string }[] }).tasks.some(task => task.changeId === "defer-demo"), true);
+  assert.match(readFileSync(testState, "utf8"), /defer_change:defer-demo/);
+});
+
+test("rejects deferral with a pending checkpoint", () => {
+  if (existsSync(testState)) rmSync(testState);
+  const store = new Store("test");
+  store.registerTask("defer-pending", [{ id: "t1", description: "Task 1", keywords: ["task", "pending"] }]);
+  store.requestCheckpoint("defer-pending", "spec_review", "review");
+  assert.throws(() => store.deferChange("cannot defer review"), /pending checkpoint/i);
+});
 
 test("approved implementation review atomically completes history and allows the next change", () => {
   if (existsSync(testState)) rmSync(testState);
