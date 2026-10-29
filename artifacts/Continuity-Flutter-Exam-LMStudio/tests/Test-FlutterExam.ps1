@@ -160,7 +160,7 @@ try {
   Assert ($note.Contains('final bool done;') -and $note.Contains('final int priority;')) 'Note model from exam 02 sample'
   $main = New-MainDartCode $project @('ProductListScreen','ProductDetailScreen','Ghost') 'product_app'
   Assert ($main.Contains("import 'package:product_app/screens/product_list_screen.dart';") -and $main.Contains("'/': (context) => const ProductListScreen(),") -and $main.Contains("'/product_detail': (context) => const ProductDetailScreen(),")) 'main.dart routes for existing screens'
-  Assert ($main.Contains('Chưa có lớp cho: Ghost') -and $main -notmatch 'const Ghost') 'missing screens are reported, not referenced'
+  Assert ($main.Contains('Chưa thêm route cho: Ghost') -and $main -notmatch 'const Ghost') 'missing screens are reported, not referenced'
   $mainNoFirst = New-MainDartCode $project @('Ghost','ProductDetailScreen') 'product_app'
   Assert ($mainNoFirst.Contains("initialRoute: '/product_detail'")) 'initial route falls back to the first existing screen'
   $s.exam = $exam01
@@ -209,7 +209,9 @@ try {
   $threw = $false; try { Test-FlutterChecklist $b | Out-Null } catch { $threw = $true }
   Assert (!$threw) '/check survives a truncated draft'
 
-  Section 'analyze'
+  Section 'analyze (stub SDK, kit SDK hidden)'
+  $kitSdkRoot = $script:SdkRoot
+  $script:SdkRoot = Join-Path $tmp 'no-sdk'
   $savedPath = $env:PATH
   $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -and !(Test-Path (Join-Path $_ 'flutter.bat')) -and !(Test-Path (Join-Path $_ 'flutter.cmd')) -and !(Test-Path (Join-Path $_ 'flutter.exe')) }) -join ';'
   Assert (!(Get-AnalyzePlan $s).canRun -and (Get-AnalyzePlan $s).reason -match 'PATH') 'no Flutter SDK -> analysis not tested'
@@ -228,6 +230,75 @@ try {
   Assert ((Get-TreeHash $s.project) -eq $before) 'project unchanged by drafts and analysis'
   Assert (!@(Get-ChildItem $env:TEMP -Directory -Filter 'flutter-exam-analyze-*' -ErrorAction SilentlyContinue).Count) 'temporary analysis copies removed'
   $env:PATH = $savedPath
+  $script:SdkRoot = $kitSdkRoot
+
+  Section 'analyzer output and repair loop (no SDK needed)'
+  $parsed = @(ConvertFrom-AnalyzerOutput @("  error - C:\t\x\lib\a.dart:3:5 - Undefined name 'x'. Try correcting the name. - undefined_identifier", '  info - lib\b.dart:1:1 - Prefer const. - prefer_const', 'Analyzing x...') 'C:\t\x')
+  Assert ($parsed.Count -eq 2 -and $parsed[0].file -eq 'lib/a.dart' -and $parsed[0].line -eq 3 -and $parsed[0].code -eq 'undefined_identifier' -and $parsed[1].severity -eq 'info') 'analyzer lines parsed into file/line/code'
+  $script:analyses = 0
+  $fakeAnalyzer = { param($session, $overrides) $script:analyses++; $c = $overrides.Values | Select-Object -First 1
+    $errs = if ($c -match 'BROKEN') { @([pscustomobject]@{ severity='error'; file='lib/x.dart'; line=1; column=1; message='bad'; code='c' }) } else { @() }
+    [pscustomobject]@{ tested=$true; ok=!$errs.Count; summary=''; issues=$errs } }
+  $loop = Repair-WithAnalyzer $s 'lib/x.dart' 'BROKEN' -Model { param($p) if ($p -match 'Dòng 1: BROKEN\s+Lỗi: bad') { 'class Fixed {}' } else { 'BROKEN' } } -Analyzer $fakeAnalyzer
+  Assert ($loop.code -eq 'class Fixed {}' -and ($loop.history -join ',') -eq '1,0' -and !$loop.errors.Count) 'compiler errors fed back to the model and fixed'
+  $loop = Repair-WithAnalyzer $s 'lib/x.dart' 'BROKEN' -Model { param($p) 'BROKEN' } -Analyzer $fakeAnalyzer
+  Assert (($loop.history -join ',') -eq '1,1,1' -and $loop.errors.Count -eq 1) 'repair stops after two rounds and keeps reporting remaining errors'
+  $loop = Repair-WithAnalyzer $s 'lib/x.dart' 'BROKEN' -Rounds 0 -Analyzer $fakeAnalyzer
+  Assert (($loop.history -join ',') -eq '1' -and $loop.code -eq 'BROKEN') 'rounds 0 only checks deterministic output'
+  $machine = @(ConvertFrom-AnalyzerOutput @('ERROR|COMPILE_TIME_ERROR|URI_DOES_NOT_EXIST|C:\\t\\x\\lib\\main.dart|2|8|30|Target of URI does not exist.') 'C:\t\x')
+  Assert ($machine[0].file -eq 'lib/main.dart' -and $machine[0].length -eq 30 -and $machine[0].code -eq 'uri_does_not_exist' -and $machine[0].severity -eq 'error') 'machine-format analyzer lines parsed with length'
+  $qfSource = "import 'package:flutter/material.dart';`nimport 'package:cupertino_icons.dart';`nvoid f(C? c, double? v) {`n  if (v <= 0) {}`n  g(c.t);`n  h(name: c!.t ?? x);`n}`nWidget w() => const S();"
+  $qfErrors = @(
+    [pscustomobject]@{ line=2; column=8; length=30; code='uri_does_not_exist'; message="Target of URI doesn't exist" },
+    [pscustomobject]@{ line=4; column=9; length=2; code='unchecked_use_of_nullable_value'; message="The operator '<=' can't be unconditionally invoked because the receiver can be 'null'." },
+    [pscustomobject]@{ line=5; column=5; length=3; code='argument_type_not_assignable'; message="The argument type 'String?' can't be assigned to the parameter type 'String'." },
+    [pscustomobject]@{ line=5; column=7; length=1; code='unchecked_use_of_nullable_value'; message="The property 't' can't be unconditionally accessed because the receiver can be 'null'." },
+    [pscustomobject]@{ line=6; column=11; length=9; code='argument_type_not_assignable'; message="The argument type 'String?' can't be assigned to the parameter type 'String'." },
+    [pscustomobject]@{ line=8; column=15; length=5; code='const_with_non_const'; message="The constructor being called isn't a const constructor." })
+  $qf = Invoke-DartQuickFixes $qfSource $qfErrors
+  $expected = "import 'package:flutter/material.dart';`nvoid f(C? c, double? v) {`n  if (v! <= 0) {}`n  g(c!.t!);`n  h(name: (c!.t ?? x)!);`n}`nWidget w() => S();"
+  Assert ($qf.code -eq $expected -and $qf.fixes.Count -eq 6) "quick fixes: drop bad import, add ! for nullable receivers/arguments, remove wrong const`n$($qf.code)"
+  $ctorProject = Get-ProjectModel $s
+  $ctorProject.dart += [pscustomobject]@{ rel='lib/screens/plain.dart'; full=''; text="class PlainScreen extends StatelessWidget {`n  PlainScreen({super.key});`n}" }
+  $ctorProject.dart += [pscustomobject]@{ rel='lib/screens/needs.dart'; full=''; text="class NeedsScreen extends StatelessWidget {`n  const NeedsScreen({`n    super.key,`n    required this.product,`n  });`n  final Object product;`n}" }
+  $ctorMain = New-MainDartCode $ctorProject @('ProductListScreen','PlainScreen','NeedsScreen') 'product_app'
+  Assert ($ctorMain.Contains("(context) => PlainScreen(),") -and $ctorMain.Contains("(context) => const ProductListScreen(),")) 'const used only for const constructors'
+  Assert ($ctorMain -notmatch '=> (const )?NeedsScreen' -and $ctorMain.Contains('NeedsScreen (constructor cần tham số')) 'screens with required parameters are not given a broken route'
+
+  if (Get-BundledSdk) {
+    Section 'real compile (kit Flutter SDK, offline, no git)'
+    $savedPath = $env:PATH
+    $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -and !(Test-Path (Join-Path $_ 'git.exe')) }) -join ';'
+    $real = New-Session (Copy-Fixture 'good-app' (Join-Path $tmp 'real\good'))
+    Remove-Item -LiteralPath (Join-Path $real.project '.dart_tool') -Recurse -Force
+    $before = Get-TreeHash $real.project
+    $r = Invoke-SafeAnalyze $real
+    Assert ($r.tested -and $r.ok) "good-app compiles with the kit SDK without git or network: $($r.summary)"
+    Assert ((Get-TreeHash $real.project) -eq $before) 'real analysis leaves the project untouched'
+    $oldSdk = New-Session (Copy-Fixture 'broken-app' (Join-Path $tmp 'real\broken'))
+    $r = Invoke-SafeAnalyze $oldSdk
+    Assert (!$r.tested -and $r.summary -match 'pub get') 'pre-null-safety project reported as not analyzable, not as passing'
+    $gen = New-Session (Copy-Fixture 'empty-app' (Join-Path $tmp 'real\gen'))
+    $pubPath = Join-Path $gen.project 'pubspec.yaml'
+    [IO.File]::WriteAllText($pubPath, ([IO.File]::ReadAllText($pubPath) -replace '(?m)^name: \w+', 'name: product_app'))
+    Save-Draft $gen 'lib/models/product.dart' (New-DartModelCode 'Product' $samples[0].value) | Out-Null
+    Save-Draft $gen 'lib/models/note.dart' (New-DartModelCode 'Note' ((Find-JsonSamples ([IO.File]::ReadAllText((Join-Path $pdfDir 'exam-02.txt'))))[0].value)) | Out-Null
+    Save-Draft $gen 'lib/models/order.dart' (New-DartModelCode 'Order' ('{"class":"A","default":1,"items":[{"a":1},{"a":2.5,"b":"x"}],"meta":null,"note":{"text":"x","tags":[1,2.5]}}' | ConvertFrom-Json)) | Out-Null
+    Save-Draft $gen 'lib/screens/product_list_screen.dart' "import 'package:flutter/material.dart';`nimport 'package:product_app/models/product.dart';`n`nclass ProductListScreen extends StatelessWidget {`n  const ProductListScreen({super.key});`n  @override`n  Widget build(BuildContext context) {`n    const p = Product(id: 1, name: 'A', price: 1.5, inStock: true, tags: []);`n    return Scaffold(body: Text(p.toJson().toString()));`n  }`n}`n" | Out-Null
+    Save-Draft $gen 'lib/screens/plain_screen.dart' "import 'package:flutter/material.dart';`n`nclass PlainScreen extends StatelessWidget {`n  PlainScreen({super.key});`n  @override`n  Widget build(BuildContext context) => const Text('x');`n}`n" | Out-Null
+    Save-Draft $gen 'lib/screens/needs_screen.dart' "import 'package:flutter/material.dart';`n`nclass NeedsScreen extends StatelessWidget {`n  const NeedsScreen({super.key, required this.id});`n  final int id;`n  @override`n  Widget build(BuildContext context) => Text('`$id');`n}`n" | Out-Null
+    Save-Draft $gen 'lib/main.dart' (New-MainDartCode (Get-ProjectModel $gen) @('ProductListScreen','PlainScreen','NeedsScreen','Ghost') 'product_app') | Out-Null
+    $r = Invoke-SafeAnalyze $gen
+    $genErrors = @($r.issues | Where-Object { $_.severity -eq 'error' })
+    if ($genErrors.Count) { $genErrors | ForEach-Object { Write-Host ('    ' + (Format-AnalyzerIssue $_)) } }
+    Assert ($r.tested -and !$genErrors.Count) 'generated JSON models (nested, nullable, keywords, num lists) and main.dart compile'
+    $realLoop = Repair-WithAnalyzer $gen 'lib/screens/broken_screen.dart' "import 'package:flutter/material.dart';`nclass BrokenScreen extends StatelessWidget {`n  const BrokenScreen({super.key});`n  @override`n  Widget build(BuildContext context) => Text(missingName);`n}" -Model { param($p) "import 'package:flutter/material.dart';`nclass BrokenScreen extends StatelessWidget {`n  const BrokenScreen({super.key});`n  @override`n  Widget build(BuildContext context) => const Text('ok');`n}" }
+    Assert ($realLoop.tested -and ($realLoop.history -join ',') -match '^[1-9]\d*,0$') "real analyzer errors drive the repair loop: $($realLoop.history -join ' -> ')"
+    $nullable = "import 'package:flutter/material.dart';`nimport 'package:cupertino_icons.dart';`nimport 'package:product_app/models/product.dart';`n`nclass QuickScreen extends StatelessWidget {`n  QuickScreen({super.key});`n  @override`n  Widget build(BuildContext context) {`n    final p = ModalRoute.of(context)?.settings.arguments as Product?;`n    final v = double.tryParse('1');`n    if (v <= 0) return const SizedBox();`n    return Text(p.name + (p.category.title));`n  }`n}`nWidget w() => const QuickScreen();`n"
+    $quickOnly = Repair-WithAnalyzer $gen 'lib/screens/quick_screen.dart' $nullable -Model { param($p) throw 'model must not be needed' }
+    Assert ($quickOnly.tested -and !$quickOnly.errors.Count -and $quickOnly.quickFixes.Count -ge 4) "real compile errors fixed by quick fixes alone: $($quickOnly.history -join ' -> ') ($($quickOnly.quickFixes -join '; '))"
+    $env:PATH = $savedPath
+  } else { Write-Host '  skip: kit has no bundled SDK (sdk\flutter)' }
 
   Section 'language'
   $cjk = -join @([char]0x4F60, [char]0x597D)
@@ -244,6 +315,7 @@ try {
   if ($Live) {
     Section 'live (LM Studio)'
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $script:liveFiles = 0; $script:liveCleanFiles = 0; $script:liveProjects = 0; $script:liveCleanProjects = 0
     $report = [Collections.Generic.List[string]]::new()
     $lm = Initialize-LmStudio -Quiet
     $report.Add("# Flutter exam kit live run $(Get-Date -Format 's')"); $report.Add('')
@@ -303,12 +375,23 @@ try {
           try {
             $raw = Invoke-LmChat $script:SystemPrompt (Get-Prompt $ls "Chỉ viết toàn bộ nội dung file $($f.rel) bằng Dart/Flutter, không giải thích, không Markdown. $($f.ask)" $f.rel) 3000
             $fixed = Repair-DartCode (Remove-CodeFence $raw) $f.rel (Get-ProjectModel $ls)
-            Save-Draft $ls $f.rel $fixed.code | Out-Null
-            $notes.Add("$($f.rel): $([int]$timer.Elapsed.TotalSeconds)s$(if ($fixed.fixes.Count) { ' (sửa: ' + ($fixed.fixes -join '; ') + ')' })")
+            $compiled = Repair-WithAnalyzer $ls $f.rel $fixed.code
+            Save-Draft $ls $f.rel $compiled.code | Out-Null
+            $errTrail = if ($compiled.tested) { ' | lỗi biên dịch qua các vòng: ' + ($compiled.history -join ' -> ') + " (sửa nhanh: $($compiled.quickFixes.Count))" } else { ' | chưa kiểm biên dịch' }
+            $notes.Add("$($f.rel): $([int]$timer.Elapsed.TotalSeconds)s$(if ($fixed.fixes.Count) { ' (sửa: ' + ($fixed.fixes -join '; ') + ')' })$errTrail")
+            $script:liveFiles++; if ($compiled.tested -and !$compiled.errors.Count) { $script:liveCleanFiles++ }
           } catch { $notes.Add("$($f.rel): FAILED $($_.Exception.Message)") }
         }
         $mainCode = New-MainDartCode (Get-ProjectModel $ls) $case.screens $case.package
         Save-Draft $ls 'lib/main.dart' $mainCode | Out-Null
+        $whole = Invoke-SafeAnalyze $ls
+        if ($whole.tested) {
+          $ls.lastAnalyze = [pscustomobject]@{ at=(Get-Date -Format 's'); ok=$whole.ok }; Save-Session $ls
+          $errCount = @($whole.issues | Where-Object { $_.severity -eq 'error' }).Count
+          $notes.Add("Toàn project (dart analyze): $(if ($errCount) { "$errCount lỗi" } else { 'không lỗi biên dịch' })")
+          if ($errCount) { @($whole.issues | Where-Object { $_.severity -eq 'error' } | Select-Object -First 8) | ForEach-Object { $notes.Add('  ' + (Format-AnalyzerIssue $_)) } }
+          $script:liveProjects++; if (!$errCount) { $script:liveCleanProjects++ }
+        } else { $notes.Add("Toàn project: chưa phân tích ($($whole.summary))") }
         $check = @()
         try { $check = @(Test-FlutterChecklist $ls) } catch { $notes.Add("CHECK CRASHED: $($_.Exception.Message)") }
         Assert ($check.Count -gt 0) "live run $run $($case.package): /check completed"
@@ -322,6 +405,7 @@ try {
         Write-Host "  run $run $($case.package): failed-checks=$(@($check | Where-Object { $_.status -eq 'failed' }).Count)"
       }
     }
+    $report.Insert(3, "- Tổng kết: $($script:liveCleanFiles)/$($script:liveFiles) file AI viết không còn lỗi biên dịch sau vòng tự sửa; $($script:liveCleanProjects)/$($script:liveProjects) project biên dịch sạch toàn bộ.")
     $resultDir = Join-Path $PSScriptRoot 'results'
     New-Item -ItemType Directory -Force -Path $resultDir | Out-Null
     $reportPath = Join-Path $resultDir "live-$stamp.md"

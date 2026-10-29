@@ -128,8 +128,23 @@ while ($true) {
         Write-Host ("Model: {0:n0}s" -f $timer.Elapsed.TotalSeconds)
         $code = $repaired.code
         $repaired.fixes | ForEach-Object { Write-Host "Đã sửa tự động: $_" }
+        $fromModel = $true
       }
+      $compileNote = ''
+      if ($rel -match '\.dart$' -and (Get-AnalyzePlan $session).canRun) {
+        Write-Host 'Đang kiểm tra biên dịch (dart analyze, offline)...'
+        $timer = [Diagnostics.Stopwatch]::StartNew()
+        $checked = Repair-WithAnalyzer $session $rel $code -Rounds $(if ($fromModel) { 2 } else { 0 })
+        $code = $checked.code
+        $checked.quickFixes | ForEach-Object { Write-Host "Sửa nhanh theo lỗi biên dịch: $_" }
+        if ($checked.history.Count -gt 1) { Write-Host ("Tự sửa theo lỗi biên dịch: {0} lỗi ({1:n0}s)" -f ($checked.history -join ' -> '), $timer.Elapsed.TotalSeconds) }
+        $compileNote = if (!$checked.tested) { "Chưa kiểm biên dịch: $($checked.note)" }
+          elseif ($checked.errors.Count) { "CÒN $($checked.errors.Count) LỖI BIÊN DỊCH trong file này:`n" + (($checked.errors | Select-Object -First 10 | ForEach-Object { "  dòng $($_.line): $($_.message)" }) -join "`n") }
+          else { 'Biên dịch: không có lỗi trong file này (dart analyze).' }
+      }
+      $fromModel = $false
       Write-Host "`nĐỀ XUẤT ${rel}:`n$code`n"
+      if ($compileNote) { Write-Host "$compileNote`n" }
       $answer = Read-Host 'Gõ SAVE để lưu bản nháp riêng'
       if ($answer -cne 'SAVE') { $code = $null; continue }
       $replace = $false
@@ -143,5 +158,5 @@ while ($true) {
       continue
     }
     Write-Host 'Lệnh không hợp lệ. Gõ /help.'
-  } catch { $code = $null; Write-Host "Lỗi: $($_.Exception.Message)" }
+  } catch { $code = $null; $fromModel = $false; Write-Host "Lỗi: $($_.Exception.Message)" }
 }

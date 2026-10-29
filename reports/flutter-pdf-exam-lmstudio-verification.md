@@ -1,39 +1,55 @@
 # Flutter PDF exam kit (LM Studio) — implementation verification (2026-10-30)
 
 Kit: `artifacts/Continuity-Flutter-Exam-LMStudio`. Change: `openspec/changes/flutter-pdf-exam-lmstudio`.
-Nothing was committed or pushed. The Web-Test1 kit, the VS Code extension and user projects were not modified. LM Studio was started for testing and returned to its previous state (server stopped, model unloaded).
+The Web-Test1 kit, the VS Code extension and user projects were not modified. LM Studio was started for testing and returned to its previous state (server stopped, model unloaded).
 
 ## Authorization and open questions
 
-The user asked to "do everything automatically until complete" right after the spec was written. No formal continuity spec-review checkpoint was recorded (continuity MCP tools were unavailable in this session). Open questions 1–4 in `proposal.md` are still unanswered; the implementation follows the stated assumptions (UI screens, forms, local state, JSON models; no Firebase; Flutter SDK optional; null-safe projects).
+- The user asked to "do everything automatically until complete" right after the spec was written.
+- User answers for open questions 1–4: exam content unknown; authoritative notes exist but have not been supplied yet; SDK on the exam PC unknown, so "prepare for it"; project shape unknown. The implementation keeps the generic assumptions until the notes arrive.
+- The user approved downloading the Flutter SDK ("Cho phép tải"). That led to the bundled-SDK amendment in `design.md`.
+- No continuity checkpoint was recorded. Continuity allows a single active change, and `lm-studio-portable-offline` is still waiting at CHECKPOINT_2.
 
 ## What was built
 
-- `lib/LmStudio.ps1`: loopback-only client (`Uri.IsLoopback`, no user info/query/other paths). HttpWebRequest with explicit UTF-8, because PowerShell 5.1 decodes charset-less JSON as Latin-1. `reasoning_effort: "none"` is required: without it Qwen3.5-2B spends the whole token budget in `reasoning_content` and returns empty `content`. Of four variants tried, it was the only one that worked. Model state and vision come from `/api/v0/models` (`type: vlm`, `state`). `lms server start` / `lms load` are used when the server is down; nothing is downloaded.
-- PDF intake: `pdfinfo`/`pdftotext` (≤ 10 MB, ≤ 20 pages, form-feed page split). Pages with fewer than 40 non-space characters are treated as scans, rendered with `pdftoppm`, and transcribed by the vision model using a dedicated OCR system prompt. The result is always shown for YES/EDIT/NO confirmation.
-- Flutter intake: pubspec reader, file discovery that skips build/platform/generated files, secret redaction, project summary.
-- Deterministic generators: JSON→Dart models (`fromJson`/`toJson`, int/double merge, nullability across samples, nested objects, lists, Dart keyword renaming) and `main.dart` with named routes. Prompt rules (routes, validator requirement, existing models, allowed packages) come from the same functions `/check` uses.
-- `/check` (11 static items plus analyze/run status) and `/analyze` (temp copy, `--no-pub`, only when the SDK exists and `pub get` has been run before).
+- `lib/LmStudio.ps1`: loopback-only client (`Uri.IsLoopback`). HttpWebRequest with explicit UTF-8, because PowerShell 5.1 decodes charset-less JSON as Latin-1. `reasoning_effort: "none"` is required: otherwise Qwen3.5-2B spends the whole token budget in `reasoning_content` and returns an empty `content`. Model state and vision come from `/api/v0/models`. `lms server start` / `lms load` are used when needed.
+- PDF intake: `pdfinfo`/`pdftotext` (≤ 10 MB, ≤ 20 pages). Scanned pages are rendered with `pdftoppm` and transcribed by the vision model with a dedicated OCR prompt. Output that solves the exam instead of copying it is rejected. Everything is shown for YES/EDIT/NO confirmation.
+- Flutter intake, JSON→Dart model generator and `main.dart` generator (reads real constructors). Prompt rules are shared with `/check`.
+- Bundled Flutter 3.47.8 stable SDK (Dart 3.13.7, archive SHA-256 `11e19ea3…eb6e` matched the official `releases_windows.json`): 3.25 GB in `sdk/flutter`, plus a 113 MB offline pub cache (71 package versions).
+  - Analysis calls `dart.exe` directly with process-local `FLUTTER_ROOT`/`PUB_CACHE`: `pub get --offline`, then `analyze --format=machine`, on a temporary copy.
+  - It works **without git** (`flutter.bat` requires git) and without network.
+- `/file` compile-repair loop. Each proposed `.dart` file is analyzed first. Then come IDE-style quick fixes from exact analyzer positions:
+  - drop imports of missing files;
+  - add `!` for nullable receivers and for `T?` passed where `T` is expected;
+  - remove an invalid `const`.
+
+  After that, up to two model rewrites get the failing lines and hints. Remaining errors are printed with the proposal, and the user still decides on `SAVE`.
 
 ## Evidence
 
-- Offline self-test: **120/120** (`Flutter-Exam.ps1 -SelfTest`). Includes a stub loopback HTTP server, a stub Flutter SDK, three PDFs (text, scan, mixed), and correct, broken and empty Flutter fixtures.
-- Live runs (`-SelfTest -Live`, LM Studio 0.4.x, `qwen3.5-2b` Q4_K_M + vision, 8192 context), final report in `tests/results/live-20261030-013524.md`, drafts in `tests/results/drafts-*/`:
-  - Greeting `chao`: Vietnamese in every run, short after the system-prompt fix (5/5 extra checks without code).
-  - Scanned exam page: word recall **0.987 and 1.0**, about 1 s per page.
-  - Text PDF exam 01, 2 runs (model + 3 screens + `main.dart`): **0 failed static checks** in both.
-  - Scanned exam 02, 2 runs (model + 2 screens + `main.dart`): 1 failed check each, a hallucinated import (`package:cupertino_icons.dart`, `../routes/login_route.dart`), correctly reported.
-  - Generation time: 2–7 s per file on this PC.
-- Bugs found by live runs and fixed:
-  1. The vision model *solved* the exam instead of transcribing it (recall 0.65–0.70, output was Dart code). Fixed with a separate OCR system prompt, detection of solved output, one strict retry, and otherwise "page not read". Model code is never stored as exam text.
-  2. Route names differed between model-written navigation and generated `main.dart`. Fixed with a shared route table in the prompt.
-  3. The model used `TextField` despite validation requirements (4/4 runs). Fixed with explicit rules in the prompt; afterwards validator checks passed in all runs.
-  4. `/check` crashed on truncated output and on malformed import URIs. Both are now handled and tested.
+- Offline self-test: **121/121** (`Flutter-Exam.ps1 -SelfTest`, about 30 s). It includes:
+  - a stub loopback HTTP server and a stub SDK;
+  - real compilation with the bundled SDK and git removed from PATH:
+    - the correct fixture project compiles;
+    - a pre-null-safety project is reported "not analyzable" rather than passing;
+    - generated JSON models (nested, nullable, Dart keywords, mixed int/double lists) and `main.dart` (non-const and argument-requiring screens) compile;
+    - a file with five real compile errors is fixed by quick fixes alone;
+    - real analyzer errors drive the model repair loop.
+- Live runs, final report `tests/results/live-20261030-020341.md`, drafts in `tests/results/drafts-*/`:
+  - Greeting `chao`: Vietnamese and short in every run.
+  - Scanned exam page: word recall **1.0** in both runs, about 1 s per page.
+  - **Compilation after the repair loop: 9/10 AI-written files and 3/4 whole projects compile with no errors.**
+    - Before the repair loop, in the same setup: 0/4 projects.
+    - With model-only repair: 1/10 files, 0/4 projects. The 2B model returned the file unchanged.
+  - Remaining failure: one `NoteListScreen` refers to a `notes` field that does not exist (4 errors). Neither the quick fixes nor two model rounds fixed it, and the kit reports the errors to the user.
+  - One run's login screen still used `TextField` without a validator despite the rule. `/check` flagged it.
+  - Time: 6–19 s per AI-written file including compile checks; whole-project analysis about 6 s.
+- Bugs found by live runs and fixed: the OCR prompt solved the exam instead of copying it; route names differed from the generated `main.dart`; `TextField` was used instead of `Form`; `/check` crashed on truncated output or malformed imports; `main.dart` used `const` for non-const screens.
 
 ## Limitations for the reviewer
 
-- **Static checks are not compilation.** No Flutter/Dart SDK exists on this PC and none was downloaded. A manual read of a generated `add_product_screen.dart` that passed every static check found at least three compile errors: comparing `double?` from `tryParse` with `<= 0`, using `context` in a `StatelessWidget` helper method, and no button calling the save method. Generated screens must go through `/analyze` on a machine with the SDK, or `flutter analyze` in the IDE.
-- JSON→Dart models and `main.dart` are deterministic and reviewed by hand, but also not compiler-verified.
-- Scan transcription was measured on one clean synthetic page (Arial 30 px at 150 dpi). Real phone photos, skew, low resolution and handwriting are untested.
-- The 8 GB RAM target, school hardware and a clean offline PC are untested. LM Studio itself must be installed from the LM Studio kit.
-- `tools/pdf` is Poppler (GPL), copied from the LM Studio kit, which has no license file for it. A license notice should be added before redistribution.
+- "Compiles" is not "correct". The kit does not run the app. Behaviour (navigation, validation messages, data flow) must be checked with `flutter run` or in the IDE.
+- Offline analysis only works for packages in the kit's pub cache (listed in `manifest.json`); other packages are reported "not analyzable". Pre-null-safety projects cannot be analyzed with Dart 3.
+- Scan transcription was measured on one clean synthetic page. Phone photos, skew, low resolution and handwriting are untested.
+- Not yet trialled: 8 GB RAM target, school hardware, a clean offline PC. The kit plus SDK is about 3.5 GB, and LM Studio with its model is installed separately from the LM Studio kit.
+- Licenses: Poppler 26.09.0 (GPL) has `NOTICE.txt` and the GPLv2 text; texts for its dependency DLLs are not included. The Flutter SDK ships its own `LICENSE` files.

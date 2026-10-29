@@ -54,3 +54,12 @@
 - Offline unit tests (no LM Studio): PDF text page, mixed text/scan PDF classification, normalisation, pubspec parsing, import resolution, JSON→Dart generator, checklist on a correct and an intentionally broken fixture project, path safety, session isolation/restart, loopback-only URL guard, and the error mapping of a stub HTTP server.
 - Live tests (LM Studio running): Vietnamese greeting ×3; at least two different exam PDFs (one text, one scanned page) → exam confirmation → generate one screen and one model → `/check`; `/analyze` only if an SDK is installed. Results and drafts are kept under `tests/results/`.
 - Memory/time are recorded on the preparation PC; the 8 GB target remains unverified until tried.
+
+## Amendment (2026-10-30): bundled Flutter SDK and compile-repair loop
+
+Approved by the user ("Cho phép tải") after the first implementation showed that static checks alone pass code that does not compile.
+
+- The kit bundles the official Flutter 3.47.8 stable Windows SDK (Dart 3.13.7, archive SHA-256 verified against `releases_windows.json`) in `sdk/flutter`, plus an offline pub cache in `sdk/pub-cache` warmed with cupertino_icons 1.x/2.x, flutter_lints 3–6, http, provider, shared_preferences, sqflite, path and intl.
+- Analysis calls `sdk/flutter/bin/cache/dart-sdk/bin/dart.exe` directly with process-local `FLUTTER_ROOT`/`PUB_CACHE`: `pub get --offline` then `analyze --format=machine` on a temporary copy. `flutter.bat` is not used because it requires git on PATH. A system SDK on PATH remains the fallback.
+- `/file` checks each proposed `.dart` file before it is shown. First come IDE-style quick fixes from exact analyzer positions (drop imports of missing files, `!` for nullable receivers and `T?`→`T` arguments, remove invalid `const`). Then up to two model rewrites, with the failing lines and hints. Remaining errors are printed with the proposal, and the user still decides on `SAVE`.
+- `main.dart` generation reads each screen's real constructor: `const` only for const constructors, and no route for screens that need arguments.

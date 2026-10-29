@@ -21,6 +21,13 @@ Build a new, independent portable terminal kit `artifacts/Continuity-Flutter-Exa
 - Cloud models, Ollama, and changes to the Web-Test1 kit or the VS Code extension.
 - Handwriting recognition. Scanned typed exams only, and only if measured accuracy is acceptable (task 3).
 
+## User answers (2026-10-30)
+
+1. Exam content: the user does not know. Keep the generic assumption below, and replace it with the authoritative notes once they are supplied.
+2. Authoritative notes: they exist. The file still has to be supplied, then bundled as a hash-pinned snapshot.
+3. Flutter SDK on the exam PC: unknown, and the user wants the kit to be prepared for both cases. A bundled offline SDK option needs a download approved by the user.
+4. Project shape: unknown. Keep detecting null safety and warning on older projects.
+
 ## Open questions (assumptions used until the user answers)
 
 1. **Exam content.** Assumed: UI screens with widgets/navigation/forms, local state (`StatefulWidget`/`setState`, optionally Provider), lists from in-memory or JSON data, and optionally an HTTP API or SQLite. Firebase is assumed absent. The checklist rules in the design follow this assumption and must be revised if wrong.

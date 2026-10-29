@@ -8,6 +8,7 @@ $script:KitRoot = Split-Path $PSScriptRoot -Parent
 $script:SessionDir = Join-Path $script:KitRoot 'sessions'
 $script:DraftRoot = Join-Path $script:KitRoot 'drafts'
 $script:PdfTools = Join-Path $script:KitRoot 'tools\pdf'
+$script:SdkRoot = Join-Path $script:KitRoot 'sdk'
 $script:MaxExamChars = 20000
 $script:MaxHistory = 8
 $script:MaxPdfBytes = 10MB
@@ -568,11 +569,20 @@ function New-MainDartCode($project, [string[]]$screens, [string]$title) {
   foreach ($screen in $screens) {
     $c = @($classes | Where-Object { $_.name -eq $screen -and $_.file -match '^lib/' } | Select-Object -First 1)
     if (!$c.Count) { $missing.Add($screen); continue }
+    # Read the real constructor: model-written screens are not always const and may require arguments.
+    $text = @($project.dart | Where-Object { $_.rel -eq $c[0].file })[0].text
+    $body = @(Get-ClassBodies $text | Where-Object { $_.name -eq $screen })[0].body
+    $ctor = [regex]::Match([string]$body, "(?s)(const\s+)?\b$screen\s*\(([^;]*?)\)\s*(?::|;|\{)")
+    $params = if ($ctor.Success) { $ctor.Groups[2].Value } else { '' }
+    if ($params -match '\brequired\s+(?!super\.key)' -or ($params -replace '(?s)\{.*$','' -replace 'super\.key','').Trim(" ,`r`n`t")) {
+      $missing.Add("$screen (constructor cần tham số; truyền qua arguments rồi đọc bằng ModalRoute)"); continue
+    }
     $imports.Add("import 'package:$($project.package)/$($c[0].file.Substring(4))';")
-    $routes.Add("        '$($names[$screen])': (context) => const $screen(),")
+    $const = if ($ctor.Success -and $ctor.Groups[1].Success) { 'const ' } else { '' }
+    $routes.Add("        '$($names[$screen])': (context) => $const$screen(),")
     if (!$initial) { $initial = $names[$screen] }
   }
-  $todo = if ($missing.Count) { "`n// Chưa có lớp cho: $($missing -join ', '). Tạo màn hình rồi sinh lại main.dart." } else { '' }
+  $todo = if ($missing.Count) { "`n// Chưa thêm route cho: $($missing -join "; "). Tạo/sửa màn hình rồi sinh lại main.dart." } else { '' }
   $routeBlock = if ($routes.Count) { "      initialRoute: '$initial',`n      routes: {`n$($routes -join "`n")`n      }," } else { "      home: const Scaffold(body: Center(child: Text('Chưa có màn hình'))),"}
   return @"
 $(@($imports | Select-Object -Unique) -join "`n")
@@ -738,20 +748,69 @@ function Format-Checklist($items) {
 
 # ---------------------------------------------------------------- analyze
 
+function Get-BundledSdk {
+  # Kit-local Flutter SDK. dart.exe is called directly: flutter.bat refuses to run without git on PATH.
+  $root = Join-Path $script:SdkRoot 'flutter'
+  $dart = Join-Path $root 'bin\cache\dart-sdk\bin\dart.exe'
+  if (!(Test-Path -LiteralPath $dart)) { return $null }
+  return [pscustomobject]@{ flutterRoot=$root; dart=$dart; pubCache=(Join-Path $script:SdkRoot 'pub-cache') }
+}
 function Get-AnalyzePlan($s) {
   $project = Get-ProjectModel $s
   if (!$project.pubspec) { return [pscustomobject]@{ canRun=$false; reason='Không có pubspec.yaml.' } }
+  $bundled = Get-BundledSdk
+  if ($bundled) { return [pscustomobject]@{ canRun=$true; reason=''; mode='bundled'; sdk=$bundled } }
   if (!(Test-Path -LiteralPath (Join-Path $s.project '.dart_tool\package_config.json'))) {
-    return [pscustomobject]@{ canRun=$false; reason="Project chưa từng chạy 'flutter pub get' trên máy này; kit không tự tải package." }
+    return [pscustomobject]@{ canRun=$false; reason="Kit không có SDK đi kèm và project chưa từng chạy 'flutter pub get' trên máy này; kit không tự tải package." }
   }
   $tool = if ($project.pubspec.usesFlutter) { 'flutter' } else { 'dart' }
   $cmd = Get-Command $tool -ErrorAction SilentlyContinue
-  if (!$cmd) { return [pscustomobject]@{ canRun=$false; reason="Máy này không có $tool trong PATH; mục phân tích để 'chưa kiểm'." } }
-  return [pscustomobject]@{ canRun=$true; reason=''; tool=$tool; command=$cmd.Source }
+  if (!$cmd) { return [pscustomobject]@{ canRun=$false; reason="Kit không có SDK đi kèm và máy này không có $tool trong PATH; mục phân tích để 'chưa kiểm'." } }
+  return [pscustomobject]@{ canRun=$true; reason=''; mode='system'; tool=$tool; command=$cmd.Source }
 }
-function Invoke-SafeAnalyze($s) {
+function Invoke-WithSdkEnvironment($sdk, [scriptblock]$Action) {
+  # Process-local variables only; nothing is written to the user's Flutter/Dart configuration.
+  $saved = @{}
+  $vars = @{ FLUTTER_ROOT=$sdk.flutterRoot; PUB_CACHE=$sdk.pubCache; FLUTTER_SUPPRESS_ANALYTICS='true'; PUB_ENVIRONMENT='continuity-flutter-exam' }
+  foreach ($k in $vars.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k, 'Process'); [Environment]::SetEnvironmentVariable($k, $vars[$k], 'Process') }
+  try { return & $Action } finally { foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k], 'Process') } }
+}
+function Invoke-BundledPubGet($sdk) {
+  # Resolve only from the kit's pub cache. If pubspec.lock pins versions the kit lacks, retry without the lock.
+  $get = Invoke-NativeQuiet $sdk.dart @('--suppress-analytics','pub','get','--offline')
+  if ($get.exitCode -ne 0 -and (Test-Path -LiteralPath 'pubspec.lock')) {
+    Remove-Item -LiteralPath 'pubspec.lock' -Force
+    $get = Invoke-NativeQuiet $sdk.dart @('--suppress-analytics','pub','get','--offline')
+  }
+  return $get
+}
+function ConvertFrom-AnalyzerOutput([string[]]$lines, [string]$root) {
+  # dart analyze: "  error - lib\a.dart:3:5 - Message. - code"; flutter analyze uses the same fields with "•".
+  # --format=machine: "ERROR|COMPILE_TIME_ERROR|CODE|C:\\path\\lib\\a.dart|LINE|COL|LENGTH|Message" (gives the length quick fixes need).
+  return @($lines | ForEach-Object {
+    $file = $null
+    $m = [regex]::Match($_, '^(ERROR|WARNING|INFO)\|[^|]*\|([^|]*)\|(.*?)\|(\d+)\|(\d+)\|(\d+)\|(.*)$')
+    if ($m.Success) {
+      $file = $m.Groups[3].Value.Replace('\\', '\'); $severity = $m.Groups[1].Value.ToLowerInvariant(); $code = $m.Groups[2].Value.ToLowerInvariant()
+      $line = [int]$m.Groups[4].Value; $column = [int]$m.Groups[5].Value; $length = [int]$m.Groups[6].Value; $message = $m.Groups[7].Value.Trim()
+    } else {
+      $m = [regex]::Match($_, '^\s*(error|warning|info)\s+[•-]\s+(.+?):(\d+):(\d+)\s+[•-]\s+(.+?)\s+[•-]\s+([a-z0-9_]+)\s*$')
+      if ($m.Success) {
+        $file = $m.Groups[2].Value; $severity = $m.Groups[1].Value; $code = $m.Groups[6].Value
+        $line = [int]$m.Groups[3].Value; $column = [int]$m.Groups[4].Value; $length = 0; $message = $m.Groups[5].Value
+      }
+    }
+    if ($file) {
+      if ($root -and $file.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { $file = $file.Substring($root.Length).TrimStart('\','/') }
+      [pscustomobject]@{ severity=$severity; file=$file.Replace('\','/'); line=$line; column=$column; length=$length; message=$message; code=$code }
+    }
+  })
+}
+function Format-AnalyzerIssue($issue) { return "$($issue.severity) - $($issue.file):$($issue.line):$($issue.column) - $($issue.message) - $($issue.code)" }
+function Invoke-SafeAnalyze($s, [hashtable]$Overrides = @{}) {
+  # Overrides: relative path -> content, e.g. a proposed file that has not been saved as a draft yet.
   $plan = Get-AnalyzePlan $s
-  if (!$plan.canRun) { return [pscustomobject]@{ ok=$false; tested=$false; summary=$plan.reason } }
+  if (!$plan.canRun) { return [pscustomobject]@{ ok=$false; tested=$false; summary=$plan.reason; issues=@() } }
   $temp = Join-Path $env:TEMP ('flutter-exam-analyze-' + [Guid]::NewGuid().ToString('N').Substring(0,8))
   try {
     # Analyze a throwaway copy so the project never gets drafts or tool output.
@@ -766,12 +825,118 @@ function Invoke-SafeAnalyze($s) {
       New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null
       Copy-Item -LiteralPath $d.full -Destination $dest -Force
     }
-    $toolArgs = if ($plan.tool -eq 'flutter') { @('analyze','--no-pub','--no-fatal-infos','--no-fatal-warnings') } else { @('analyze','--fatal-warnings') }
+    foreach ($rel in $Overrides.Keys) {
+      if (!(Test-SafeDraftPath $rel)) { throw "Đường dẫn không hợp lệ: $rel" }
+      $dest = Join-Path $temp $rel.Replace('/','\')
+      New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null
+      [IO.File]::WriteAllText($dest, [string]$Overrides[$rel], $script:Utf8)
+    }
     Push-Location $temp
-    try { $run = Invoke-NativeQuiet $plan.command $toolArgs; $output = $run.output; $code = $run.exitCode } finally { Pop-Location }
-    $issues = @($output | Where-Object { $_ -match '^\s*(error|warning)\s+[•-]' } | ForEach-Object { $_.Trim().Replace($temp + '\', '') } | Select-Object -First 15)
+    try {
+      if ($plan.mode -eq 'bundled') {
+        $result = Invoke-WithSdkEnvironment $plan.sdk {
+          Remove-Item -LiteralPath '.dart_tool' -Recurse -Force -ErrorAction SilentlyContinue
+          $get = Invoke-BundledPubGet $plan.sdk
+          if ($get.exitCode -ne 0) { return [pscustomobject]@{ pubFailed=$true; output=$get.output } }
+          $run = Invoke-NativeQuiet $plan.sdk.dart @('--suppress-analytics','analyze','--format=machine','--no-fatal-warnings','.')
+          return [pscustomobject]@{ pubFailed=$false; output=$run.output; exitCode=$run.exitCode }
+        }
+        if ($result.pubFailed) {
+          $why = @($result.output | Where-Object { $_.Trim() -and $_ -notmatch '^Resolving dependencies' } | Select-Object -First 6)
+          return [pscustomobject]@{ ok=$false; tested=$false; issues=@(); summary="Không phân tích được: 'pub get --offline' thất bại (package không có trong cache của kit, hoặc ràng buộc SDK quá cũ).`n$($why -join "`n")" }
+        }
+        $output = $result.output; $code = $result.exitCode
+      } else {
+        $toolArgs = if ($plan.tool -eq 'flutter') { @('analyze','--no-pub','--no-fatal-infos','--no-fatal-warnings') } else { @('analyze','--fatal-warnings') }
+        $run = Invoke-NativeQuiet $plan.command $toolArgs; $output = $run.output; $code = $run.exitCode
+      }
+    } finally { Pop-Location }
+    $parsed = @(ConvertFrom-AnalyzerOutput $output $temp)
+    $shown = @($parsed | Where-Object { $_.severity -ne 'info' } | Select-Object -First 15 | ForEach-Object { Format-AnalyzerIssue $_ })
+    if (!$parsed.Count) { $shown = @($output | Where-Object { $_ -match '^\s*(error|warning)\s+[•-]' } | ForEach-Object { $_.Trim().Replace($temp + '\', '') } | Select-Object -First 15) }
     $ok = ($code -eq 0)
-    $summary = if ($ok) { 'Phân tích không có lỗi (bản sao tạm gồm project + bản nháp).' } elseif ($issues.Count) { $issues -join "`n" } else { ($output | Select-Object -Last 10) -join "`n" }
-    return [pscustomobject]@{ ok=$ok; tested=$true; summary=$summary }
+    $summary = if ($ok) { 'Phân tích không có lỗi (bản sao tạm gồm project + bản nháp).' } elseif ($shown.Count) { $shown -join "`n" } else { ($output | Select-Object -Last 10) -join "`n" }
+    return [pscustomobject]@{ ok=$ok; tested=$true; summary=$summary; issues=$parsed }
   } finally { Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue }
+}
+function Invoke-DartQuickFixes([string]$code, $errors) {
+  # IDE-style mechanical fixes driven by the analyzer's exact positions. Logic errors are left to the model.
+  $nl = if ($code.Contains("`r`n")) { "`r`n" } else { "`n" }
+  $lines = [Collections.Generic.List[string]]::new(); $code -split "`r?`n" | ForEach-Object { $lines.Add($_) }
+  $edits = [Collections.Generic.List[object]]::new(); $dropLines = [Collections.Generic.HashSet[int]]::new()
+  foreach ($e in $errors) {
+    $i = $e.line - 1
+    if ($i -lt 0 -or $i -ge $lines.Count -or $e.column -lt 1) { continue }
+    $text = $lines[$i]; $start = $e.column - 1; $end = $start + $e.length
+    if ($end -gt $text.Length) { continue }
+    switch -Regex ($e.code) {
+      '^uri_does_not_exist$' {
+        if ($text -match '^\s*(import|export)\s') { [void]$dropLines.Add($i); $edits.Add([pscustomobject]@{ line=$i; pos=-1; delete=0; insert=''; note="bỏ import không tồn tại: $($text.Trim())" }) }
+      }
+      '^unchecked_use_of_nullable_value$|^unchecked_(method_invocation|property_access|operator_invocation)_of_nullable_value$' {
+        if ($start -ge 1 -and $text[$start - 1] -eq '.' -and !($start -ge 2 -and $text[$start - 2] -in @('?','!'))) {
+          $edits.Add([pscustomobject]@{ line=$i; pos=$start - 1; delete=0; insert='!'; note="thêm ! trước .$($text.Substring($start, $e.length))" })
+        } elseif ($e.message -match "operator '") {
+          $p = $start; while ($p -gt 0 -and [char]::IsWhiteSpace($text[$p - 1])) { $p-- }
+          if ($p -gt 0 -and $text[$p - 1] -ne '!') { $edits.Add([pscustomobject]@{ line=$i; pos=$p; delete=0; insert='!'; note='thêm ! cho vế trái của phép so sánh' }) }
+        }
+      }
+      '^(argument_type_not_assignable|invalid_assignment|return_of_invalid_type)$' {
+        $types = [regex]::Match($e.message, "'([^']+)\?' can't be (?:assigned|returned)[^']*'([^']+)'")
+        if ($types.Success -and $types.Groups[1].Value -eq $types.Groups[2].Value -and $e.length -gt 0) {
+          $expr = $text.Substring($start, $e.length)
+          if ($expr -match '^[\w.!\[\]''"]+$') { $edits.Add([pscustomobject]@{ line=$i; pos=$end; delete=0; insert='!'; note="thêm ! sau $expr" }) }
+          else { $edits.Add([pscustomobject]@{ line=$i; pos=$start; delete=$e.length; insert="($expr)!"; note="thêm ! sau ($expr)" }) }
+        }
+      }
+      '^const_with_non_const$' {
+        if ($text.Substring($start, $e.length) -eq 'const') { $edits.Add([pscustomobject]@{ line=$i; pos=$start; delete=$(if ($end -lt $text.Length -and $text[$end] -eq ' ') { 6 } else { 5 }); insert=''; note='bỏ const sai' }) }
+      }
+    }
+  }
+  # Apply right-to-left on each line so earlier positions stay valid.
+  $applied = [Collections.Generic.List[string]]::new()
+  foreach ($ed in @($edits | Where-Object { $_.pos -ge 0 } | Sort-Object @{ Expression='line'; Descending=$true }, @{ Expression='pos'; Descending=$true })) {
+    if ($dropLines.Contains($ed.line)) { continue }
+    $t = $lines[$ed.line]
+    $lines[$ed.line] = $t.Substring(0, $ed.pos) + $ed.insert + $t.Substring($ed.pos + $ed.delete)
+    $applied.Add("dòng $($ed.line + 1): $($ed.note)")
+  }
+  foreach ($d in @($dropLines | Sort-Object -Descending)) { $applied.Add("dòng $($d + 1): " + (@($edits | Where-Object { $_.line -eq $d -and $_.pos -lt 0 })[0].note)); $lines.RemoveAt($d) }
+  return [pscustomobject]@{ code=($lines -join $nl); fixes=@($applied) }
+}
+$script:FixHints = @{
+  'undefined_getter' = 'Nếu đang đọc thuộc tính từ Map thì đổi sang dùng lớp model có sẵn (ví dụ product.name), hoặc dùng map[''key''].'
+  'undefined_identifier' = 'Tên chưa được khai báo. Nếu là context trong StatelessWidget thì truyền BuildContext context vào hàm đó.'
+  'undefined_method' = 'setState chỉ dùng trong lớp State của StatefulWidget; đổi widget thành StatefulWidget hoặc bỏ setState.'
+  'missing_required_argument' = 'Truyền đủ tham số bắt buộc của constructor/hàm.'
+  'undefined_class' = 'Lớp không tồn tại; import đúng file hoặc dùng lớp có trong project.'
+}
+function Repair-WithAnalyzer($s, [string]$rel, [string]$code, [int]$Rounds = 2,
+    [scriptblock]$Model = { param($p) Invoke-LmChat $script:SystemPrompt $p 3000 },
+    [scriptblock]$Analyzer = { param($session, $overrides) Invoke-SafeAnalyze $session $overrides }) {
+  # Real compiler errors for this one file: mechanical quick fixes first, then up to $Rounds model rewrites.
+  # The user still sees the final code and decides whether to SAVE it.
+  $history = [Collections.Generic.List[int]]::new(); $quick = [Collections.Generic.List[string]]::new()
+  $modelRounds = 0
+  for ($iteration = 0; $iteration -lt 10; $iteration++) {
+    $result = & $Analyzer $s @{ $rel = $code }
+    if (!$result.tested) { return [pscustomobject]@{ code=$code; tested=$false; errors=@(); history=@($history); quickFixes=@($quick); note=$result.summary } }
+    $errors = @($result.issues | Where-Object { $_.severity -eq 'error' -and $_.file -eq $rel })
+    $history.Add($errors.Count)
+    if (!$errors.Count) { break }
+    $fixed = Invoke-DartQuickFixes $code $errors
+    if ($fixed.fixes.Count -and $fixed.code -ne $code) { $code = $fixed.code; $fixed.fixes | ForEach-Object { $quick.Add($_) }; continue }
+    if ($modelRounds -ge $Rounds) { break }
+    $modelRounds++
+    $codeLines = $code -split "`r?`n"
+    $list = ($errors | Select-Object -First 10 | ForEach-Object {
+      $src = if ($_.line -ge 1 -and $_.line -le $codeLines.Count) { $codeLines[$_.line - 1].Trim() } else { '' }
+      "- Dòng $($_.line): $src`n  Lỗi: $($_.message)$(if ($script:FixHints[$_.code]) { "`n  Gợi ý: " + $script:FixHints[$_.code] })"
+    }) -join "`n"
+    $prompt = (Get-Prompt $s "Sửa lỗi biên dịch trong file $rel." $rel) +
+      "`nFILE HIỆN TẠI ($rel):`n$code`n`nCÁC DÒNG ĐANG LỖI BIÊN DỊCH (dart analyze). Phải sửa hết các dòng này; giữ nguyên phần còn lại:`n$list`nChỉ trả về TOÀN BỘ nội dung file đã sửa, không giải thích, không Markdown."
+    $code = (Repair-DartCode (Remove-CodeFence (& $Model $prompt)) $rel (Get-ProjectModel $s)).code
+  }
+  return [pscustomobject]@{ code=$code; tested=$true; errors=$errors; history=@($history); quickFixes=@($quick); note='' }
 }

@@ -1,0 +1,7 @@
+# Large or machine-local parts of the kit; staged on the preparation PC, not versioned.
+sdk/
+tools/pdf/*.exe
+tools/pdf/*.dll
+sessions/
+drafts/
+tests/results/drafts-*/

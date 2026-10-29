@@ -11,3 +11,7 @@ The user asked to "automatically do everything until complete" while away, right
 ## Implementation status (2026-10-30)
 
 Implemented; awaiting spec confirmation (open questions 1–4) and implementation review. Offline self-test 120/120; live LM Studio runs on a text PDF and a scanned PDF exam recorded in the kit's `tests/results/`. Generated Dart is not compiler-verified (no Flutter SDK on this PC). Evidence and limitations: `reports/flutter-pdf-exam-lmstudio-verification.md`. No commit or push.
+
+## Update (2026-10-30, after user answers)
+
+User answers: exam content and project shape unknown; authoritative Flutter notes exist (file not yet supplied); SDK on exam PC unknown, so prepare for it; download approved. Bundled Flutter 3.47.8 SDK and offline pub cache added, plus a compile-repair loop in `/file`. Offline self-test 121/121; live: 9/10 AI-written files and 3/4 projects compile after repair. Still open: authoritative notes, continuity checkpoints (blocked by the pending `lm-studio-portable-offline` review), target-hardware trial.
