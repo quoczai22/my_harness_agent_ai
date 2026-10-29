@@ -6,6 +6,7 @@
   "private": true,
   "publisher": "quoczai22",
   "license": "MIT",
+  "icon": "media/continuity.png",
   "engines": {
     "vscode": "^1.95.0"
   },
@@ -13,17 +14,6 @@
     "Other"
   ],
   "main": "./dist/extension.js",
-  "activationEvents": [
-    "onView:continuity.workflow",
-    "onView:continuity.assistant.sessions",
-    "onView:continuity.assistant.chat",
-    "onView:continuity.assistant.composer",
-    "onCommand:continuity.refresh",
-    "onCommand:continuity.openTimeline",
-    "onCommand:continuity.summarizeWithOllama",
-    "onCommand:continuity.assistant.rebuildStyleProfile",
-    "onCommand:continuity.assistant.clearSessions"
-  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -38,22 +28,26 @@
       "continuity": [
         {
           "id": "continuity.workflow",
-          "name": "Workflow"
+          "name": "Workflow",
+          "icon": "media/continuity.svg"
         },
         {
           "type": "webview",
           "id": "continuity.assistant.sessions",
-          "name": "Assistant: Sessions"
+          "name": "Assistant: Sessions",
+          "icon": "media/continuity.svg"
         },
         {
           "type": "webview",
           "id": "continuity.assistant.chat",
-          "name": "Assistant: Chat"
+          "name": "Assistant: Chat",
+          "icon": "media/continuity.svg"
         },
         {
           "type": "webview",
           "id": "continuity.assistant.composer",
-          "name": "Assistant: Composer"
+          "name": "Assistant: Composer",
+          "icon": "media/continuity.svg"
         }
       ]
     },
@@ -65,6 +59,10 @@
       {
         "command": "continuity.assistant.rebuildStyleProfile",
         "title": "Assistant: Rebuild Style Profile"
+      },
+      {
+        "command": "continuity.assistant.openCodeStyle",
+        "title": "Assistant: Open Project Coding Style"
       },
       {
         "command": "continuity.assistant.clearSessions",
@@ -85,6 +83,26 @@
       {
         "command": "continuity.clearOpenAIKey",
         "title": "Continuity: Clear OpenAI API Key"
+      },
+      {
+        "command": "continuity.toggleTrustedAutoWrite",
+        "title": "Continuity: Toggle Trusted Workspace Auto-Write"
+      },
+      {
+        "command": "continuity.buildWorkspaceIndex",
+        "title": "Continuity: Build Workspace Index"
+      },
+      {
+        "command": "continuity.clearWorkspaceIndex",
+        "title": "Continuity: Clear Workspace Index"
+      },
+      {
+        "command": "continuity.viewAutoWriteAudit",
+        "title": "Continuity: View Auto-Write Audit Log"
+      },
+      {
+        "command": "continuity.applyTrustedProposal",
+        "title": "Continuity: Apply Trusted Agent Proposal"
       }
     ],
     "menus": {
@@ -98,6 +116,11 @@
           "command": "continuity.openTimeline",
           "when": "view == continuity.workflow",
           "group": "navigation@1"
+        },
+        {
+          "command": "continuity.applyTrustedProposal",
+          "when": "view == continuity.assistant.composer",
+          "group": "navigation"
         }
       ]
     },
@@ -127,6 +150,47 @@
           "type": "string",
           "default": "qwen2.5-coder:7b",
           "description": "Local model for Offline Assistant. Requests are restricted to Ollama at 127.0.0.1:11434."
+        },
+        "continuity.offlineAssistantProvider": {
+          "type": "string",
+          "enum": ["ollama", "lmstudio"],
+          "default": "ollama",
+          "description": "Local inference provider for Offline Assistant and trusted proposal planning."
+        },
+        "continuity.lmStudioEndpoint": {
+          "type": "string",
+          "default": "http://127.0.0.1:1234",
+          "description": "Local LM Studio server URL. Only HTTP loopback is accepted."
+        },
+        "continuity.lmStudioModel": {
+          "type": "string",
+          "default": "",
+          "description": "Identifier of a model loaded in the local LM Studio server."
+        },
+        "continuity.pdfTextExecutable": {
+          "type": "string",
+          "default": "",
+          "description": "Path to a locally installed pdftotext executable for offline PDF text extraction."
+        },
+        "continuity.ollamaAutoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start the installed local Ollama service automatically when Continuity activates. Uses only 127.0.0.1 and never downloads models."
+        },
+        "continuity.inlineCompletions.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable local inline completions powered by Ollama."
+        },
+        "continuity.trustedAutoWrite.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable opt-in Trusted Workspace Auto-Write for safe create/replace edits."
+        },
+        "continuity.workspaceIndex.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable opt-in bounded workspace indexing."
         }
       }
     }

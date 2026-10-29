@@ -12,6 +12,7 @@ export interface ChatMessage {
   timestamp: string;
   diffSnippet?: string;
   targetFile?: string;
+  retrievedFiles?: string[];
 }
 
 export interface ChatSession {
@@ -19,6 +20,7 @@ export interface ChatSession {
   title: string;
   createdAt: string;
   messages: ChatMessage[];
+  pendingAgentTask?: string;
 }
 
 export interface AssistantPersistedState {
@@ -59,6 +61,29 @@ export class AssistantStore {
     return session;
   }
 
+  async selectSession(sessionId: string): Promise<void> {
+    const state = this.getState();
+    if (!state.sessions.some(session => session.id === sessionId)) throw new Error(`Session '${sessionId}' not found.`);
+    state.activeSessionId = sessionId;
+    await this.saveState(state);
+  }
+
+  async setPendingAgentTask(sessionId: string, task: string | undefined): Promise<void> {
+    const state = this.getState();
+    const session = state.sessions.find(item => item.id === sessionId);
+    if (!session) throw new Error(`Session '${sessionId}' not found.`);
+    if (task) session.pendingAgentTask = task.slice(0, 12_000);
+    else delete session.pendingAgentTask;
+    await this.saveState(state);
+  }
+
+  getBoundedConversation(sessionId: string, maxChars = 12_000): string {
+    const session = this.getState().sessions.find(item => item.id === sessionId);
+    if (!session) return "";
+    const lines = session.messages.filter(message => message.sender === "user" || message.sender === "assistant").map(message => `${message.sender === "user" ? "User" : "Assistant"}: ${message.text}`);
+    const text = lines.join("\n\n");
+    return text.length <= maxChars ? text : `[Earlier messages omitted]\n${text.slice(-maxChars)}`;
+  }
   async deleteSession(sessionId: string): Promise<void> {
     const state = this.getState();
     state.sessions = state.sessions.filter(s => s.id !== sessionId);

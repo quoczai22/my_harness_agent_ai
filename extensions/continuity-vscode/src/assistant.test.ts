@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
 import {
   isIgnoredPath,
   sanitizeWorkspaceContext,
@@ -12,8 +13,20 @@ import {
   MAX_CONTEXT_BYTES
 } from "./assistant";
 import { AssistantStore } from "./assistantStore";
-import { DEFAULT_OFFLINE_OLLAMA_TIMEOUT_MS, queryOfflineOllama, resolveOfflineOllamaTimeout } from "./ollamaClient";
+
+test("pending agent question survives store reload and clears after resumption", async () => {
+  const data: Record<string, unknown> = {};
+  const memento = { get: <T>(key: string) => data[key] as T | undefined, update: async (key: string, value: unknown) => { data[key] = value; } };
+  const store = new AssistantStore(memento);
+  const session = await store.createSession("Agent");
+  await store.setPendingAgentTask(session.id, "Choose a framework");
+  assert.equal(new AssistantStore(memento).getState().sessions[0].pendingAgentTask, "Choose a framework");
+  await store.setPendingAgentTask(session.id, undefined);
+  assert.equal(new AssistantStore(memento).getState().sessions[0].pendingAgentTask, undefined);
+});
+import { DEFAULT_OFFLINE_OLLAMA_TIMEOUT_MS, ensureLocalOllamaService, OLLAMA_TAGS_URL, queryOfflineOllama, resolveOfflineOllamaTimeout } from "./ollamaClient";
 import { renderNonceProtectedHtml, renderSafeMarkdown, splitAssistantResponse } from "./chatResponse";
+import { wrapWebviewHtml, SessionsViewProvider } from "./sidebarViews";
 
 test("security assertion: ignore filtering blocks .git, node_modules, dist, .env, and binary files", () => {
   // Ignored directory paths
@@ -213,6 +226,7 @@ test("safe Markdown escapes untrusted HTML while keeping readable code blocks", 
   assert.match(rendered, /&lt;script&gt;/);
   assert.doesNotMatch(rendered, /<script>/);
 });
+
 test("rendered webview CSP uses a non-empty matching nonce and model text cannot inject scripts", () => {
   const nonce = "nonce-regression-123";
   const model = renderSafeMarkdown("<script>evil()</script>");
@@ -221,4 +235,205 @@ test("rendered webview CSP uses a non-empty matching nonce and model text cannot
   assert.match(html, /<script nonce="nonce-regression-123">const vscode/);
   assert.match(html, /&lt;script&gt;evil/);
   assert.doesNotMatch(html, /<script>evil/);
+});
+
+test("assistant webviews avoid inline event attributes and bind controls from nonce scripts", () => {
+  const sidebarPath = existsSync("src/sidebarViews.ts") ? "src/sidebarViews.ts" : "extensions/continuity-vscode/src/sidebarViews.ts";
+  const source = readFileSync(sidebarPath, "utf8");
+  assert.doesNotMatch(source, /\son[a-z]+\s*=/i);
+  for (const id of ["btnNewSession", "btnClearAll", "btnSend", "btnReviewSelection", "btnApply", "btnDiscard"]) assert.match(source, new RegExp(`getElementById\\('${id}'\\)\\?\\.addEventListener`));
+  assert.match(source, /safeBody = bodyContent\.replace\(\/&lt;script&gt;\/|safeBody = bodyContent\.replace\(\/<script>/);
+  assert.match(source, /script-src 'nonce-\$\{nonce\}'/);
+});
+
+test("chat timeline renders stable prompt anchors and preserves/follows scroll through webview state", () => {
+  const sidebarPath = existsSync("src/sidebarViews.ts") ? "src/sidebarViews.ts" : "extensions/continuity-vscode/src/sidebarViews.ts";
+  const source = readFileSync(sidebarPath, "utf8");
+  assert.match(source, /id="message-\$\{escapeHtml\(m\.id\)\}"/);
+  assert.match(source, /data-jump-target="message-\$\{escapeHtml\(message\.id\)\}"/);
+  assert.match(source, /title="\$\{escapeHtml\(preview\)\}"/);
+  assert.match(source, /aria-label="Jump to prompt: \$\{escapeHtml\(preview\)\}"/);
+  assert.match(source, /scrollIntoView\(\{ behavior: 'smooth', block: 'start' \}\)/);
+  assert.match(source, /priorState\.latestMessageId !== latestMessageId/);
+  assert.match(source, /messages\.scrollTop = messages\.scrollHeight/);
+  assert.match(source, /Math\.min\(priorState\.scrollTop/);
+  assert.match(source, /messages\?\.addEventListener\('scroll'/);
+  assert.match(source, /requestAnimationFrame/);
+});
+test("Ollama auto-start uses only fixed no-shell local serve and waits for readiness", async () => {
+  let probes = 0;
+  const launches: Array<{ command: string; args: readonly string[]; options: any }> = [];
+  await ensureLocalOllamaService({
+    fetchImpl: async (url: string) => {
+      assert.equal(url, OLLAMA_TAGS_URL);
+      probes++;
+      return { ok: probes >= 2 };
+    },
+    spawnImpl: (command, args, options) => {
+      launches.push({ command, args, options });
+      return { unref() {} };
+    },
+    sleep: async () => {},
+    startupTimeoutMs: 20,
+    pollIntervalMs: 1
+  });
+  assert.equal(launches.length, 1);
+  assert.deepEqual(launches[0].args, ["serve"]);
+  assert.equal(launches[0].command, "ollama");
+  assert.equal(launches[0].options.shell, false);
+  assert.equal(launches[0].options.windowsHide, true);
+});
+
+test("Ollama auto-start respects opt-out and does not launch a process", async () => {
+  let launched = false;
+  await assert.rejects(() => ensureLocalOllamaService({
+    autoStart: false,
+    fetchImpl: async () => ({ ok: false }),
+    spawnImpl: () => { launched = true; return { unref() {} }; }
+  }), /ollamaAutoStart/);
+  assert.equal(launched, false);
+});
+
+test("session context isolation: selectSession updates activeSessionId and persists state", async () => {
+  const memoryStore: Record<string, any> = {};
+  const mockMemento: any = {
+    get: (key: string) => memoryStore[key],
+    update: async (key: string, val: any) => { memoryStore[key] = val; }
+  };
+
+  const store = new AssistantStore(mockMemento);
+  const session1 = await store.createSession("First Session");
+  const session2 = await store.createSession("Second Session");
+
+  assert.equal(store.getState().activeSessionId, session2.id);
+
+  await store.selectSession(session1.id);
+  assert.equal(store.getState().activeSessionId, session1.id);
+
+  // Persistence check across reload
+  const reloadedStore = new AssistantStore(mockMemento);
+  assert.equal(reloadedStore.getState().activeSessionId, session1.id);
+
+  await assert.rejects(
+    () => store.selectSession("nonexistent-session-id"),
+    /Session 'nonexistent-session-id' not found/
+  );
+});
+
+test("session context isolation: bounded history is isolated per session, bounds length, and excludes system messages", async () => {
+  const memoryStore: Record<string, any> = {};
+  const mockMemento: any = {
+    get: (key: string) => memoryStore[key],
+    update: async (key: string, val: any) => { memoryStore[key] = val; }
+  };
+
+  const store = new AssistantStore(mockMemento);
+  const sessionA = await store.createSession("Session A");
+  const sessionB = await store.createSession("Session B");
+
+  // Add messages to Session A: user, assistant, and system diagnostic error
+  await store.addMessage(sessionA.id, { sender: "user", text: "How do I sort an array?" });
+  await store.addMessage(sessionA.id, { sender: "assistant", text: "Use array.sort((a, b) => a - b);" });
+  await store.addMessage(sessionA.id, { sender: "system", text: "Error: Ollama connection timeout" });
+
+  // Add messages to Session B
+  await store.addMessage(sessionB.id, { sender: "user", text: "Explain React hooks." });
+  await store.addMessage(sessionB.id, { sender: "assistant", text: "Hooks allow state in functional components." });
+
+  // Session A bounded conversation contains only Session A user/assistant messages
+  const convA = store.getBoundedConversation(sessionA.id);
+  assert.match(convA, /User: How do I sort an array\?/);
+  assert.match(convA, /Assistant: Use array\.sort/);
+  assert.doesNotMatch(convA, /Ollama connection timeout/);
+  assert.doesNotMatch(convA, /React hooks/);
+
+  // Session B bounded conversation contains only Session B user/assistant messages
+  const convB = store.getBoundedConversation(sessionB.id);
+  assert.match(convB, /User: Explain React hooks\./);
+  assert.match(convB, /Assistant: Hooks allow state/);
+  assert.doesNotMatch(convB, /sort an array/);
+  assert.doesNotMatch(convB, /Ollama connection timeout/);
+
+  // Brand new session C starts with empty conversation history
+  const sessionC = await store.createSession("Session C");
+  const convC = store.getBoundedConversation(sessionC.id);
+  assert.equal(convC, "");
+
+  // Bounded length truncation
+  const boundedA = store.getBoundedConversation(sessionA.id, 30);
+  assert.match(boundedA, /^\[Earlier messages omitted\]/);
+  assert.ok(boundedA.length <= 60);
+});
+
+test("session context isolation: sidebar sessions view binds selectSession, highlights active session, and notifies chat refresh", async () => {
+  const memoryStore: Record<string, any> = {};
+  const mockMemento: any = {
+    get: (key: string) => memoryStore[key],
+    update: async (key: string, val: any) => { memoryStore[key] = val; }
+  };
+
+  const store = new AssistantStore(mockMemento);
+  const session1 = await store.createSession("Chat 1");
+  const session2 = await store.createSession("Chat 2");
+  await store.selectSession(session1.id);
+
+  let refreshNotified = false;
+  const sessionsViewProvider = new SessionsViewProvider(store, () => {
+    refreshNotified = true;
+  });
+
+  let messageHandler: ((msg: any) => Promise<void> | void) | undefined;
+  let renderedHtml = "";
+
+  const mockWebviewView: any = {
+    webview: {
+      options: {},
+      set html(val: string) { renderedHtml = val; },
+      get html() { return renderedHtml; },
+      onDidReceiveMessage(handler: any) {
+        messageHandler = handler;
+        return { dispose() {} };
+      }
+    }
+  };
+
+  sessionsViewProvider.resolveWebviewView(mockWebviewView);
+
+  // Verify HTML contains active session styling and selection attributes
+  assert.match(renderedHtml, /class="card session-active"/);
+  assert.match(renderedHtml, new RegExp(`data-select-session="${session1.id}"`));
+  assert.match(renderedHtml, new RegExp(`data-select-session="${session2.id}"`));
+  assert.match(renderedHtml, /\.session-active/);
+
+  // Simulate selecting session 2
+  assert.ok(messageHandler);
+  refreshNotified = false;
+  await messageHandler({ command: "selectSession", sessionId: session2.id });
+
+  assert.equal(store.getState().activeSessionId, session2.id);
+  assert.equal(refreshNotified, true);
+  assert.match(renderedHtml, new RegExp(`data-select-session="${session2.id}"[^>]*>Chat 2 \\(0 msgs\\) — Active`));
+});
+test("session selection persists and bounded conversation excludes other sessions and system messages", async () => {
+  const data: Record<string, unknown> = {};
+  const store = new AssistantStore({ get: <T>(key: string) => data[key] as T | undefined, update: async (key: string, value: unknown) => { data[key] = value; } });
+  const first = await store.createSession("First");
+  await store.addMessage(first.id, { sender: "user", text: "first-user" });
+  await store.addMessage(first.id, { sender: "system", text: "first-system-secret" });
+  const second = await store.createSession("Second");
+  await store.addMessage(second.id, { sender: "assistant", text: "second-assistant" });
+  await store.selectSession(first.id);
+  assert.equal(store.getState().activeSessionId, first.id);
+  const history = store.getBoundedConversation(first.id, 20);
+  assert.match(history, /first-user/);
+  assert.doesNotMatch(history, /first-system-secret|second-assistant/);
+  assert.ok(history.length <= 20 || history.startsWith("[Earlier messages omitted]"));
+});
+
+test("Sessions webview binds selection controls and marks active row", () => {
+  const source = readFileSync("src/sidebarViews.ts", "utf8");
+  assert.match(source, /data-select-session/);
+  assert.match(source, /command: 'selectSession'/);
+  assert.match(source, /session-active/);
+  assert.match(source, /onSessionChanged\(\)/);
 });
