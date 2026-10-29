@@ -31,9 +31,12 @@ RTK reduces shell output, not all conversation or model tokens. Keep its raw-out
 
 ## Multi-Workspace Dashboard & Registry
 
-The Continuity dashboard provides a local, read-only web interface for monitoring workflow stages, active changes, and allowlisted artifacts.
+The Continuity dashboard opens as **Harness Atlas**, a local CodeAtlas-style project cockpit. It can register any folder you explicitly choose, index safe text files, visualize an evidence-derived Project Flow, show the Harness execution flow, and keep chat sessions isolated per project. Antigravity CLI is connected in sandboxed proposal mode: it receives only the bounded safe context you select, returns chat plus read-only file proposals, and never applies changes automatically.
 
 ```powershell
+# Build and open the current repository at http://127.0.0.1:3456
+npm run dashboard -- --workspace "D:\Projects\my-project" --port 3456
+
 # Run with single workspace
 node dist/dashboard.js --workspace "D:\Projects\my-project" --port 3456
 
@@ -43,4 +46,10 @@ node dist/dashboard.js --registry ".continuity/workspaces.json"
 node dist/dashboard.js -r ".continuity/workspaces.json"
 ```
 
-For setup instructions, schema specifications, and fail-fast validation rules, see [.continuity/REGISTRY.md](file:///.continuity/REGISTRY.md) and template [.continuity/workspaces.example.json](file:///.continuity/workspaces.example.json).
+In the browser, use **Choose workspace** to open the Windows folder picker. A chosen folder is saved locally in `.continuity/workspaces.local.json` and appears immediately in the project selector. On systems without the native picker, enter an absolute folder path in the fallback field.
+
+Use the **Sáng / Tối / Hệ thống** control in the header to change appearance. The selection is stored only in browser localStorage; System mode follows the operating-system color preference.
+
+Antigravity is discovered from `agy` on `PATH` or `%LOCALAPPDATA%\agy\bin\agy.exe`. Passive discovery only runs `agy --version`; quota is consumed only after you click **Test connection** or **Send to Antigravity**. Every Harness session stores its own Antigravity conversation id, so changing sessions or workspaces does not mix chat context.
+
+For registry schema and fail-fast validation rules, see `.continuity/REGISTRY.md` and `.continuity/workspaces.example.json`.

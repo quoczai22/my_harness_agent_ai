@@ -1,8 +1,27 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath, URL } from "node:url";
+import {
+  buildContextPacket,
+  buildProjectFlow,
+  buildProjectIndex,
+  createHarnessSession,
+  discoverProviderStates,
+  extractFileRelationships,
+  loadHarnessSessions,
+  readSafeProjectFile,
+  updateHarnessSession,
+  type OrchestrationMode,
+} from "./universalHarness.js";
+import {
+  loadUserWorkspaceRegistry,
+  mergeWorkspaceRegistries,
+  pickWindowsWorkspaceFolder,
+  registerUserWorkspace,
+} from "./workspaceRegistry.js";
+import { runAntigravity } from "./antigravityAdapter.js";
 
 export interface RegisteredWorkspace {
   id: string;
@@ -47,6 +66,35 @@ export interface DashboardOptions {
   registryPath?: string;
 }
 
+async function readJsonRequest(
+  req: IncomingMessage,
+  maximumBytes = 256_000,
+): Promise<any> {
+  return new Promise((resolvePromise, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (chunk: Buffer | string) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += buffer.length;
+      if (size > maximumBytes) {
+        reject(new Error("REQUEST_TOO_LARGE"));
+        req.destroy();
+        return;
+      }
+      chunks.push(buffer);
+    });
+    req.on("end", () => {
+      try {
+        const text = Buffer.concat(chunks).toString("utf8");
+        resolvePromise(text ? JSON.parse(text) : {});
+      } catch {
+        reject(new Error("INVALID_JSON"));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
 const ALLOWLISTED_PREFIXES = ["openspec", "reports", "tasks", ".continuity"];
 
 export function isPathContained(
@@ -79,17 +127,43 @@ export function getGitSummary(workspaceRoot: string): {
   clean: boolean;
   modifiedFiles: string[];
 } {
+  let gitDir = join(workspaceRoot, ".git");
   try {
-    const branch = execSync("git branch --show-current", {
-      cwd: workspaceRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    const statusOut = execSync("git status --porcelain", {
-      cwd: workspaceRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+    if (!existsSync(gitDir)) {
+      return { branch: "unknown", clean: true, modifiedFiles: [] };
+    }
+    if (statSync(gitDir).isFile()) {
+      const pointer = readFileSync(gitDir, "utf8").trim();
+      if (!pointer.startsWith("gitdir:")) {
+        return { branch: "unknown", clean: true, modifiedFiles: [] };
+      }
+      gitDir = resolve(dirname(gitDir), pointer.slice("gitdir:".length).trim());
+    }
+  } catch {
+    return { branch: "unknown", clean: true, modifiedFiles: [] };
+  }
+
+  let branch = "unknown";
+  try {
+    const head = readFileSync(join(gitDir, "HEAD"), "utf8").trim();
+    branch = head.startsWith("ref: refs/heads/")
+      ? head.slice("ref: refs/heads/".length)
+      : head.slice(0, 12) || "unknown";
+  } catch {
+    return { branch: "unknown", clean: true, modifiedFiles: [] };
+  }
+
+  try {
+    const statusOut = execFileSync(
+      "git",
+      ["status", "--porcelain", "--untracked-files=no"],
+      {
+        cwd: workspaceRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 1_500,
+      },
+    ).trim();
     const modifiedFiles = statusOut
       ? statusOut
           .split("\n")
@@ -97,12 +171,12 @@ export function getGitSummary(workspaceRoot: string): {
           .filter(Boolean)
       : [];
     return {
-      branch: branch || "main",
+      branch,
       clean: modifiedFiles.length === 0,
       modifiedFiles,
     };
   } catch {
-    return { branch: "unknown", clean: true, modifiedFiles: [] };
+    return { branch, clean: true, modifiedFiles: [] };
   }
 }
 
@@ -472,11 +546,27 @@ export function getDashboardHtml(): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Continuity Core Dashboard</title>
+  <title>Continuity Core Dashboard · Harness Atlas</title>
+  <script>
+    (() => {
+      try {
+        const stored = localStorage.getItem("harness-atlas-theme-v1");
+        const preference = stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
+        const resolved = preference === "system"
+          ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+          : preference;
+        document.documentElement.dataset.theme = resolved;
+        document.documentElement.dataset.themePreference = preference;
+      } catch {
+        document.documentElement.dataset.theme = "dark";
+        document.documentElement.dataset.themePreference = "system";
+      }
+    })();
+  </script>
   <style>
     :root {
-      --bg-dark: #090d16;
-      --card-bg: rgba(22, 28, 45, 0.75);
+      --bg-dark: #080b10;
+      --card-bg: #10141b;
       --card-border: rgba(255, 255, 255, 0.08);
       --accent-blue: #38bdf8;
       --accent-purple: #a855f7;
@@ -494,7 +584,8 @@ export function getDashboardHtml(): string {
       color: var(--text-main);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
       min-height: 100vh;
-      padding: 24px;
+      padding: 0;
+      overflow-x: hidden;
     }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
     .glass-card {
@@ -600,12 +691,306 @@ export function getDashboardHtml(): string {
       70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); }
       100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
     }
+    button, input, select, textarea { font: inherit; }
+    button, select { cursor: pointer; }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+      outline: 2px solid #7dd3fc;
+      outline-offset: 2px;
+    }
+    .app-shell { min-height: 100vh; display: flex; flex-direction: column; }
+    .topbar {
+      height: 72px; display: grid; grid-template-columns: minmax(220px, 1fr) minmax(260px, 440px) minmax(220px, 1fr);
+      align-items: center; gap: 24px; padding: 0 22px; border-bottom: 1px solid #232a35;
+      background: rgba(8, 11, 16, 0.96); position: sticky; top: 0; z-index: 10;
+    }
+    .brand-block { display: flex; align-items: center; gap: 11px; }
+    .brand-mark {
+      width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; font-weight: 900;
+      color: #061018; background: linear-gradient(135deg, #7dd3fc, #34d399); box-shadow: 0 0 24px rgba(56,189,248,.22);
+    }
+    .brand-block h1 { font-size: .98rem; letter-spacing: -.02em; }
+    .brand-block p { color: #6f7b8d; font-size: .72rem; margin-top: 2px; }
+    .eyebrow { color: #667386; font-size: .64rem; font-weight: 800; letter-spacing: .13em; }
+    .project-switcher { display: flex; flex-direction: column; gap: 5px; }
+    .project-switcher-row { display: flex; align-items: center; gap: 7px; }
+    .project-switcher-row select { min-width: 0; flex: 1; }
+    .choose-workspace { flex: 0 0 auto; padding: 8px 10px; color: #9de8ff; background: #10212b; border: 1px solid #24526a; border-radius: 8px; font-size: .68rem; }
+    .choose-workspace:hover { color: #e8fbff; border-color: #38bdf8; }
+    .path-entry { display: flex; gap: 6px; }
+    .path-entry input { min-width: 0; flex: 1; padding: 7px 9px; color: #dbe7f4; background: #10161e; border: 1px solid #2b3542; border-radius: 7px; font-size: .68rem; }
+    .project-switcher select, .mode-select select {
+      color: #e7edf6; background: #131922; border: 1px solid #293241; border-radius: 8px; padding: 8px 11px;
+    }
+    .topbar-meta { justify-self: end; display: flex; align-items: center; gap: 8px; color: #8190a4; font-size: .75rem; }
+    .topbar-meta kbd { border: 1px solid #2b3440; border-bottom-width: 2px; border-radius: 5px; padding: 3px 6px; background: #12171f; }
+    .theme-switcher { display: inline-flex; align-items: center; padding: 2px; border: 1px solid #2b3440; border-radius: 8px; background: #111720; }
+    .theme-switcher button { display: flex; align-items: center; gap: 4px; padding: 5px 7px; color: #738095; background: transparent; border: 0; border-radius: 6px; font-size: .63rem; }
+    .theme-switcher button:hover { color: #d9e7f5; }
+    .theme-switcher button.active { color: #dff8ff; background: #203342; box-shadow: inset 0 0 0 1px #32627a; }
+    .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #34d399; box-shadow: 0 0 10px #34d399; }
+    .error-banner { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 10px 18px; color: #fecdd3; background: #3a111d; border-bottom: 1px solid #7f1d38; font-size: .84rem; }
+    .error-banner button { color: inherit; background: transparent; border: 0; font-size: 1.2rem; }
+    .workspace-grid { display: grid; grid-template-columns: 300px minmax(420px, 1fr) 330px; min-height: calc(100vh - 72px); }
+    .panel { min-width: 0; background: #0d1117; }
+    .explorer-panel, .agent-panel { display: flex; flex-direction: column; max-height: calc(100vh - 72px); position: sticky; top: 72px; }
+    .explorer-panel { border-right: 1px solid #222933; }
+    .agent-panel { border-left: 1px solid #222933; }
+    .canvas-panel { background: radial-gradient(circle at 50% 0%, rgba(34,211,238,.055), transparent 32%), #0a0e14; }
+    .panel-heading { display: flex; justify-content: space-between; align-items: center; padding: 20px 18px 14px; }
+    .panel-heading h2 { margin-top: 4px; font-size: .98rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+    .count-pill { padding: 3px 8px; border-radius: 999px; color: #8fa0b6; background: #171d26; border: 1px solid #29313d; font-size: .7rem; }
+    .search-box { margin: 0 14px 12px; display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: #131820; border: 1px solid #252d38; border-radius: 8px; color: #68768a; }
+    .search-box:focus-within { border-color: #38bdf8; box-shadow: 0 0 0 3px rgba(56,189,248,.08); }
+    .search-box input { width: 100%; color: #dfe7f1; background: transparent; border: 0; outline: 0; font-size: .78rem; }
+    .technology-row { display: flex; flex-wrap: wrap; gap: 5px; padding: 0 14px 12px; }
+    .tech-chip, .context-badges span { color: #8be0ff; background: #10212b; border: 1px solid #1d4352; border-radius: 5px; padding: 3px 6px; font-size: .64rem; }
+    .file-list { flex: 1; overflow: auto; padding: 3px 8px 12px; scrollbar-width: thin; scrollbar-color: #303b49 transparent; }
+    .file-row { display: flex; align-items: center; border: 1px solid transparent; border-radius: 7px; }
+    .file-row:hover, .file-row.active { background: #151b24; border-color: #242e3a; }
+    .file-row.active { box-shadow: inset 2px 0 #38bdf8; }
+    .file-open { min-width: 0; flex: 1; display: flex; align-items: center; gap: 9px; padding: 8px; color: #d6dee9; background: transparent; border: 0; text-align: left; }
+    .file-glyph { flex: 0 0 26px; width: 26px; height: 26px; display: grid; place-items: center; border-radius: 5px; color: #7dd3fc; background: #122532; font-size: .58rem; font-weight: 900; }
+    .file-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .file-copy strong, .file-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-copy strong { font-size: .75rem; font-weight: 650; }
+    .file-copy small { max-width: 205px; color: #667386; font-size: .62rem; }
+    .context-toggle { width: 27px; height: 27px; margin-right: 6px; border: 1px solid #2c3542; border-radius: 6px; color: #718096; background: transparent; }
+    .context-toggle:hover, .context-toggle.selected { color: #6ee7b7; border-color: #237557; background: rgba(16,185,129,.08); }
+    .panel-footer { display: flex; justify-content: space-between; gap: 8px; padding: 10px 14px; color: #5f6b7b; border-top: 1px solid #202630; font-size: .62rem; }
+    .warn-text { color: #fbbf24; }
+    .canvas-tabs { height: 52px; display: flex; align-items: end; gap: 4px; padding: 0 18px; border-bottom: 1px solid #222933; }
+    .canvas-tabs button { height: 42px; color: #718096; background: transparent; border: 0; border-bottom: 2px solid transparent; padding: 0 12px; font-size: .74rem; }
+    .canvas-tabs button.active { color: #e8edf5; border-color: #38bdf8; }
+    .canvas-tabs button span { margin-left: 4px; padding: 1px 5px; border-radius: 999px; background: #1d2530; font-size: .6rem; }
+    .safe-state { margin-left: auto; align-self: center; padding: 4px 8px; color: #6ee7b7; border: 1px solid #1d543f; border-radius: 999px; background: rgba(16,185,129,.07); font-size: .64rem; }
+    .project-overview { max-width: 900px; margin: 0 auto; padding: clamp(32px, 6vw, 74px) clamp(24px, 5vw, 70px); }
+    .hero-copy h2 { max-width: 680px; margin: 10px 0 12px; font-size: clamp(1.8rem, 4vw, 3.25rem); line-height: 1.05; letter-spacing: -.045em; }
+    .hero-copy p { max-width: 680px; color: #8491a3; line-height: 1.65; font-size: .9rem; }
+    .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 30px; }
+    .metric-grid article { display: flex; flex-direction: column; min-height: 112px; padding: 15px; border: 1px solid #222b36; border-radius: 10px; background: linear-gradient(145deg,#111720,#0c1118); }
+    .metric-grid span, .metric-grid small { color: #657386; font-size: .65rem; }
+    .metric-grid strong { margin: auto 0 5px; color: #ecf4ff; font-size: 1.3rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .architecture-card { display: flex; align-items: center; gap: 10px; margin-top: 14px; padding: 17px; border: 1px solid #23303b; border-radius: 10px; background: #0e141c; overflow-x: auto; }
+    .arch-node { flex: 0 0 auto; padding: 9px 12px; border-radius: 7px; font-size: .7rem; }
+    .source-node { color: #bfdbfe; background: #14253b; border: 1px solid #25476d; }
+    .context-node { color: #a7f3d0; background: #10291f; border: 1px solid #205c42; }
+    .arch-line { min-width: 25px; height: 1px; background: #354253; }
+    .arch-agents { display: flex; gap: 5px; }
+    .arch-agents span { flex: 0 0 auto; padding: 7px 9px; border: 1px solid #333d4b; border-radius: 6px; color: #aab6c5; background: #151b23; font-size: .65rem; }
+    .activity-strip { display: flex; justify-content: space-between; gap: 16px; margin-top: 14px; padding: 14px 16px; border-left: 2px solid #38bdf8; background: #10161e; }
+    .activity-strip div { display: flex; flex-direction: column; gap: 5px; }
+    .activity-strip strong { font-size: .75rem; }
+    .activity-strip > span { color: #667386; font-size: .65rem; }
+    .code-view { height: calc(100vh - 124px); display: flex; flex-direction: column; }
+    .code-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 17px 20px; border-bottom: 1px solid #202731; }
+    .code-header h2 { margin-top: 5px; font-size: .84rem; font-family: ui-monospace, monospace; }
+    .secondary-button { padding: 7px 10px; color: #a8b4c4; background: #141a23; border: 1px solid #2a3441; border-radius: 7px; font-size: .68rem; }
+    .secondary-button.selected { color: #6ee7b7; border-color: #226a4d; }
+    .code-block { flex: 1; margin: 0; overflow: auto; padding: 22px; color: #c9d4e2; background: #080c11; font: .76rem/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; tab-size: 2; }
+    .code-loading { flex: 1; display: grid; place-items: center; color: #738095; }
+    .relationship-dock { min-height: 65px; display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding: 12px 18px; border-top: 1px solid #222933; }
+    .relationship-dock button { padding: 5px 8px; color: #93c5fd; background: #111e31; border: 1px solid #203b62; border-radius: 5px; font-size: .63rem; }
+    .empty-canvas, .relationship-view { min-height: calc(100vh - 124px); padding: clamp(34px, 7vw, 80px); }
+    .empty-canvas { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+    .empty-canvas h2 { margin: 9px 0; font-size: 1.35rem; }
+    .empty-canvas p { max-width: 520px; color: #7e8b9d; font-size: .82rem; line-height: 1.6; }
+    .empty-orbit { width: 62px; height: 62px; display: grid; place-items: center; margin-bottom: 16px; color: #7dd3fc; border: 1px solid #285671; border-radius: 50%; background: radial-gradient(circle,#153348,#0c131c); font-size: 1.3rem; box-shadow: 0 0 35px rgba(56,189,248,.12); }
+    .review-steps { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 22px; }
+    .review-steps span { padding: 6px 9px; color: #8593a6; border: 1px solid #28313d; border-radius: 6px; background: #111720; font-size: .65rem; }
+    .relationship-view .hero-copy h2 { font-size: clamp(1.25rem,3vw,2rem); word-break: break-word; }
+    .relationship-graph { display: grid; grid-template-columns: minmax(140px,1fr) 40px minmax(180px,1.4fr); align-items: center; gap: 12px; margin-top: 34px; padding: 24px; border: 1px solid #24303c; border-radius: 12px; background: #0d141c; }
+    .graph-node { padding: 11px; color: #c8d6e6; border: 1px solid #344253; border-radius: 8px; background: #151d27; font: .7rem ui-monospace,monospace; text-align: left; }
+    .graph-node.current { color: #a5f3fc; border-color: #25627d; background: #102633; }
+    .graph-edges { display: flex; flex-direction: column; align-items: center; gap: 14px; color: #38bdf8; }
+    .graph-targets { display: flex; flex-direction: column; gap: 8px; }
+    .relationship-empty { margin-top: 34px; padding: 50px 20px; border: 1px dashed #283340; border-radius: 12px; }
+    .flow-view { min-height: calc(100vh - 124px); padding: clamp(24px, 4vw, 48px); }
+    .compact-hero h2 { margin: 8px 0 9px; font-size: clamp(1.35rem, 3vw, 2.15rem); letter-spacing: -.035em; }
+    .compact-hero p { max-width: 740px; color: #8290a3; font-size: .8rem; line-height: 1.6; }
+    .project-flow-scroll { margin-top: 24px; overflow: auto; border: 1px solid #23303c; border-radius: 12px; background: radial-gradient(circle at 50% 20%,rgba(56,189,248,.06),transparent 44%),#090e14; }
+    .project-flow-svg { display: block; min-width: 760px; width: 100%; min-height: 430px; }
+    .flow-edge { stroke: #334155; stroke-width: 1.4; opacity: .85; }
+    .flow-node { cursor: pointer; }
+    .flow-node rect { fill: #111923; stroke: #334155; stroke-width: 1.3; transition: .18s ease; }
+    .flow-node:hover rect, .flow-node:focus rect { fill: #142431; stroke: #38bdf8; }
+    .flow-node text { fill: #d9e5f2; font: 600 12px ui-monospace,Consolas,monospace; pointer-events: none; }
+    .flow-node-meta { fill: #748399 !important; font-size: 10px !important; font-weight: 500 !important; }
+    .flow-disclosure { margin-top: 10px; color: #fbbf24; font-size: .67rem; }
+    .flow-list { display: grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap: 7px; margin-top: 16px; }
+    .flow-list button { min-width: 0; padding: 9px 11px; color: #a9b8ca; background: #111720; border: 1px solid #26313d; border-radius: 7px; font: .67rem ui-monospace,Consolas,monospace; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .flow-list button:hover { color: #e8f7ff; border-color: #2e6b86; }
+    .harness-flow { display: flex; align-items: stretch; gap: 8px; margin-top: 28px; overflow-x: auto; padding: 4px 2px 16px; }
+    .harness-step { flex: 1 0 150px; min-height: 140px; display: flex; flex-direction: column; padding: 14px; border: 1px solid #2b3542; border-radius: 10px; background: linear-gradient(145deg,#111923,#0c1219); }
+    .harness-step strong { margin: 10px 0 7px; font-size: .76rem; }
+    .harness-step p { color: #748399; font-size: .64rem; line-height: 1.5; }
+    .harness-step small { margin-top: auto; padding-top: 12px; color: #596779; font-size: .58rem; }
+    .harness-step.done { border-color: #205c42; }
+    .harness-step.active { border-color: #2e6b86; box-shadow: 0 0 24px rgba(56,189,248,.08); }
+    .harness-step.blocked { border-color: #713244; }
+    .harness-arrow { align-self: center; color: #496075; font-size: 1.15rem; }
+    .proposal-list { display: grid; gap: 10px; margin-top: 26px; }
+    .proposal-card { padding: 14px 16px; border: 1px solid #344054; border-left: 3px solid #a78bfa; border-radius: 8px; background: #111720; }
+    .proposal-card strong { display: block; color: #e8e2ff; font: .72rem ui-monospace,Consolas,monospace; }
+    .proposal-card p { margin-top: 7px; color: #8491a3; font-size: .69rem; line-height: 1.5; }
+    .provider-list { display: flex; flex-direction: column; gap: 7px; padding: 0 14px 14px; }
+    .provider-card { display: grid; grid-template-columns: 32px 1fr 10px; align-items: center; gap: 9px; padding: 10px; border: 1px solid #232b36; border-radius: 8px; background: #12171f; }
+    .provider-icon { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 7px; font-size: .7rem; font-weight: 900; }
+    .provider-codex { color: #dbeafe; background: #1e3a5f; }
+    .provider-antigravity { color: #ede9fe; background: #3b2864; }
+    .provider-ollama { color: #d1fae5; background: #164e3a; }
+    .provider-card > div:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+    .provider-card strong { font-size: .73rem; }
+    .provider-card small { color: #6f7b8d; font-size: .58rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .provider-test { grid-column: 1 / -1; padding: 6px 8px; color: #c4b5fd; background: #1c1730; border: 1px solid #4c3d7a; border-radius: 6px; font-size: .62rem; }
+    .provider-test:disabled { cursor: wait; opacity: .55; }
+    .connection-status { grid-column: 1 / -1; color: #91a0b4; font-size: .58rem; line-height: 1.45; }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; }
+    .tone-green { background: #34d399; box-shadow: 0 0 8px #34d399; }
+    .tone-amber { background: #fbbf24; }
+    .tone-rose { background: #fb7185; }
+    .tone-muted { background: #526071; }
+    .mode-select { display: flex; flex-direction: column; gap: 6px; padding: 0 14px 16px; }
+    .mode-select select { width: 100%; font-size: .72rem; }
+    .sessions-heading { display: flex; justify-content: space-between; align-items: center; padding: 14px; border-top: 1px solid #222933; }
+    .sessions-heading > div { display: flex; flex-direction: column; gap: 4px; }
+    .sessions-heading strong { font-size: .72rem; }
+    .sessions-heading button { width: 29px; height: 29px; color: #b9eaff; background: #112735; border: 1px solid #21536a; border-radius: 7px; }
+    .session-list { max-height: 160px; overflow: auto; padding: 0 10px 10px; }
+    .session-list > button { width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px; color: #aeb8c5; background: transparent; border: 1px solid transparent; border-radius: 7px; text-align: left; }
+    .session-list > button:hover, .session-list > button.active { color: #eef6ff; background: #161d27; border-color: #26313e; }
+    .session-list button > span:last-child { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+    .session-list strong, .session-list small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .session-list strong { font-size: .7rem; }
+    .session-list small { color: #657386; font-size: .58rem; }
+    .session-icon { width: 23px; height: 23px; display: grid; place-items: center; border-radius: 5px; background: #1a2330; font-size: .65rem; }
+    .chat-history { min-height: 90px; max-height: 230px; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding: 0 14px 12px; scrollbar-width: thin; }
+    .chat-message { padding: 9px 10px; border: 1px solid #26303c; border-radius: 8px; background: #111720; }
+    .chat-message.user { border-left: 2px solid #38bdf8; }
+    .chat-message.assistant { border-left: 2px solid #a78bfa; }
+    .chat-message strong { display: block; margin-bottom: 5px; color: #9caec3; font-size: .58rem; letter-spacing: .06em; text-transform: uppercase; }
+    .chat-message p { color: #d8e1ec; font-size: .68rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .composer { margin-top: auto; padding: 14px; border-top: 1px solid #222933; background: #0b0f15; }
+    .context-badges { display: flex; gap: 5px; margin-bottom: 8px; }
+    .composer textarea { width: 100%; resize: vertical; min-height: 78px; max-height: 180px; padding: 10px; color: #e1e8f2; background: #111720; border: 1px solid #29323f; border-radius: 8px; font-size: .73rem; line-height: 1.45; }
+    .primary-button { width: 100%; display: flex; justify-content: space-between; margin-top: 8px; padding: 9px 11px; color: #041016; background: linear-gradient(90deg,#67e8f9,#6ee7b7); border: 0; border-radius: 8px; font-size: .72rem; font-weight: 800; }
+    .primary-button:disabled { cursor: wait; opacity: .58; }
+    .composer-actions { display: grid; grid-template-columns: 1fr auto; gap: 7px; align-items: end; }
+    .danger-button { padding: 9px 11px; color: #fecdd3; background: #33141e; border: 1px solid #7f1d38; border-radius: 8px; font-size: .68rem; }
+    .context-summary { margin-top: 8px; color: #86efac; font-size: .62rem; line-height: 1.4; }
+    .composer-note { display: block; margin-top: 8px; color: #596678; font-size: .58rem; line-height: 1.4; }
+    .empty-state { color: #667386; text-align: center; }
+    .empty-state.compact { padding: 18px 10px; font-size: .7rem; }
+    .empty-inline { color: #657386; font-size: .65rem; }
+    .skeleton { background: linear-gradient(90deg,#121820,#1a222d,#121820); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
+    .file-skeleton { height: 43px; margin: 4px 0; border-radius: 7px; }
+    @keyframes shimmer { to { background-position: -200% 0; } }
+    html[data-theme="light"] {
+      color-scheme: light;
+      --bg-dark: #eef2f7;
+      --card-bg: #ffffff;
+      --card-border: rgba(15, 23, 42, .12);
+      --text-main: #172033;
+      --text-muted: #64748b;
+    }
+    html[data-theme="dark"] { color-scheme: dark; }
+    html[data-theme="light"] body {
+      background-color: #eef2f7;
+      background-image: radial-gradient(at 0% 0%,rgba(14,165,233,.10),transparent 48%),radial-gradient(at 100% 100%,rgba(139,92,246,.08),transparent 48%);
+    }
+    html[data-theme="light"] .topbar,
+    html[data-theme="light"] .panel,
+    html[data-theme="light"] .composer { background: #ffffff; }
+    html[data-theme="light"] .canvas-panel { background: radial-gradient(circle at 50% 0%,rgba(14,165,233,.06),transparent 32%),#f7f9fc; }
+    html[data-theme="light"] .topbar,
+    html[data-theme="light"] .explorer-panel,
+    html[data-theme="light"] .agent-panel,
+    html[data-theme="light"] .canvas-tabs,
+    html[data-theme="light"] .panel-footer,
+    html[data-theme="light"] .sessions-heading,
+    html[data-theme="light"] .composer { border-color: #dbe2eb; }
+    html[data-theme="light"] .project-switcher select,
+    html[data-theme="light"] .mode-select select,
+    html[data-theme="light"] .search-box,
+    html[data-theme="light"] .path-entry input,
+    html[data-theme="light"] .composer textarea,
+    html[data-theme="light"] .theme-switcher { color: #263449; background: #f4f7fa; border-color: #cbd5e1; }
+    html[data-theme="light"] .theme-switcher button { color: #64748b; }
+    html[data-theme="light"] .theme-switcher button:hover { color: #0f172a; }
+    html[data-theme="light"] .theme-switcher button.active { color: #075985; background: #e0f2fe; box-shadow: inset 0 0 0 1px #7dd3fc; }
+    html[data-theme="light"] .file-row:hover,
+    html[data-theme="light"] .file-row.active,
+    html[data-theme="light"] .session-list > button:hover,
+    html[data-theme="light"] .session-list > button.active { background: #eef6fb; border-color: #cbdde9; }
+    html[data-theme="light"] .file-open,
+    html[data-theme="light"] .code-block,
+    html[data-theme="light"] .chat-message p,
+    html[data-theme="light"] .provider-card strong,
+    html[data-theme="light"] .session-list > button.active { color: #1e293b; }
+    html[data-theme="light"] .file-glyph,
+    html[data-theme="light"] .session-icon { color: #0369a1; background: #e0f2fe; }
+    html[data-theme="light"] .project-flow-scroll,
+    html[data-theme="light"] .architecture-card,
+    html[data-theme="light"] .relationship-graph,
+    html[data-theme="light"] .activity-strip,
+    html[data-theme="light"] .provider-card,
+    html[data-theme="light"] .chat-message,
+    html[data-theme="light"] .proposal-card,
+    html[data-theme="light"] .harness-step,
+    html[data-theme="light"] .metric-grid article,
+    html[data-theme="light"] .flow-list button { background: #ffffff; border-color: #d7e0ea; }
+    html[data-theme="light"] .project-flow-scroll { background: radial-gradient(circle at 50% 20%,rgba(14,165,233,.08),transparent 44%),#f8fafc; }
+    html[data-theme="light"] .flow-node rect { fill: #ffffff; stroke: #a9bacb; }
+    html[data-theme="light"] .flow-node:hover rect,
+    html[data-theme="light"] .flow-node:focus rect { fill: #e8f7ff; stroke: #0284c7; }
+    html[data-theme="light"] .flow-node text { fill: #1e293b; }
+    html[data-theme="light"] .flow-node-meta { fill: #64748b !important; }
+    html[data-theme="light"] .flow-edge { stroke: #94a3b8; }
+    html[data-theme="light"] .code-block { background: #f8fafc; }
+    html[data-theme="light"] .secondary-button,
+    html[data-theme="light"] .count-pill,
+    html[data-theme="light"] .topbar-meta kbd { color: #475569; background: #f1f5f9; border-color: #cbd5e1; }
+    html[data-theme="light"] .canvas-tabs button.active { color: #0f172a; }
+    html[data-theme="light"] .eyebrow,
+    html[data-theme="light"] .brand-block p,
+    html[data-theme="light"] .file-copy small,
+    html[data-theme="light"] .provider-card small,
+    html[data-theme="light"] .compact-hero p,
+    html[data-theme="light"] .harness-step p,
+    html[data-theme="light"] .composer-note { color: #64748b; }
+    html[data-theme="light"] .empty-state,
+    html[data-theme="light"] .empty-inline { color: #64748b; }
+    html[data-theme="light"] .skeleton { background: linear-gradient(90deg,#e8edf3,#f8fafc,#e8edf3); background-size: 200% 100%; }
+    @media (max-width: 1050px) {
+      .workspace-grid { grid-template-columns: 265px 1fr; }
+      .agent-panel { grid-column: 1 / -1; position: static; max-height: none; border-left: 0; border-top: 1px solid #222933; display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); }
+      .agent-panel .panel-heading, .agent-panel .sessions-heading, .agent-panel .composer { grid-column: 1 / -1; }
+      .provider-list { display: grid; grid-template-columns: repeat(3, 1fr); }
+      .chat-history { grid-column: 1 / -1; }
+    }
+    @media (max-width: 720px) {
+      .topbar { height: auto; grid-template-columns: 1fr; padding: 14px; gap: 12px; position: static; }
+      .topbar-meta { justify-self: start; }
+      .workspace-grid { display: block; }
+      .explorer-panel, .agent-panel { position: static; max-height: none; }
+      .file-list { max-height: 360px; }
+      .metric-grid { grid-template-columns: 1fr; }
+      .provider-list { grid-template-columns: 1fr; }
+      .agent-panel { display: flex; }
+      .architecture-card { align-items: flex-start; flex-direction: column; }
+      .arch-line { width: 1px; min-width: 1px; height: 16px; margin-left: 20px; }
+      .project-switcher-row { align-items: stretch; }
+      .harness-flow { flex-direction: column; }
+      .harness-step { flex-basis: auto; min-height: 115px; }
+      .harness-arrow { transform: rotate(90deg); }
+      .theme-label { display: inline; }
+    }
+    @media (max-width: 430px) { .theme-label { display: none; } }
   </style>
 </head>
 <body>
   <div id="root">
     <div style="display: flex; justify-content: center; align-items: center; height: 80vh;">
-      <div class="badge badge-blue" style="font-size: 1rem; padding: 12px 24px;">Loading Continuity Core Dashboard...</div>
+      <div class="badge badge-blue" style="font-size: 1rem; padding: 12px 24px;">Loading Harness Atlas...</div>
     </div>
   </div>
   <script src="/bundle.js"></script>
@@ -751,12 +1136,23 @@ export function createDashboardServer(options: DashboardOptions = {}) {
     options.registryPath ??
     process.env.CONTINUITY_REGISTRY_PATH ??
     join(workspaceRoot, ".continuity", "workspaces.json");
-  const registry = loadWorkspaceRegistry(
+  const configuredRegistry = loadWorkspaceRegistry(
     rawRegistryPath,
     workspaceRoot,
     port,
     isExplicitRegistry,
   );
+  const localRegistryPath = join(
+    workspaceRoot,
+    ".continuity",
+    "workspaces.local.json",
+  );
+  const getRegistry = (): RegisteredWorkspace[] =>
+    mergeWorkspaceRegistries(
+      configuredRegistry,
+      loadUserWorkspaceRegistry(localRegistryPath),
+    );
+  const activeAntigravityRuns = new Map<string, AbortController>();
 
   const getTargetWorkspace = (
     workspaceId?: string | null,
@@ -764,7 +1160,7 @@ export function createDashboardServer(options: DashboardOptions = {}) {
     if (!workspaceId) {
       return { root: workspaceRoot };
     }
-    const match = registry.find((w) => w.id === workspaceId);
+    const match = getRegistry().find((w) => w.id === workspaceId);
     if (!match) {
       throw new Error("UNREGISTERED");
     }
@@ -803,10 +1199,24 @@ export function createDashboardServer(options: DashboardOptions = {}) {
         res.end(content);
       };
 
-      // Strictly read-only server: reject non-GET/HEAD requests
-      if (req.method !== "GET" && req.method !== "HEAD") {
+      // Project contents remain read-only. POST is limited to local Harness
+      // metadata and bounded context assembly; all other mutations are rejected.
+      const allowedPostPaths = new Set([
+        "/api/sessions",
+        "/api/context-packet",
+        "/api/workspaces/pick",
+        "/api/workspaces/register",
+        "/api/antigravity/test",
+        "/api/antigravity/run",
+        "/api/antigravity/cancel",
+      ]);
+      if (
+        req.method !== "GET" &&
+        req.method !== "HEAD" &&
+        !(req.method === "POST" && allowedPostPaths.has(pathname))
+      ) {
         return sendJson(
-          { error: "Method not allowed: server is read-only" },
+          { error: "Method not allowed: project files are read-only" },
           405,
         );
       }
@@ -818,8 +1228,42 @@ export function createDashboardServer(options: DashboardOptions = {}) {
 
       // 2. GET /api/workspaces (Registry list & status summary)
       if (pathname === "/api/workspaces") {
-        const summaries = await getWorkspacesSummaryList(registry);
+        const summaries = await getWorkspacesSummaryList(getRegistry());
         return sendJson({ workspaces: summaries });
+      }
+
+      if (pathname === "/api/workspaces/pick") {
+        try {
+          const picked = await pickWindowsWorkspaceFolder();
+          if (picked.canceled || !picked.path) return sendJson({ canceled: true });
+          const registered = registerUserWorkspace(localRegistryPath, picked.path);
+          return sendJson({ canceled: false, ...registered }, registered.created ? 201 : 200);
+        } catch (err: any) {
+          if (err?.message === "PICKER_UNSUPPORTED") {
+            return sendJson({ error: "Native folder picker is unavailable", fallback: "path" }, 501);
+          }
+          if (err?.message === "PICKER_TIMEOUT") return sendJson({ error: "Folder picker timed out" }, 408);
+          return sendJson({ error: "Could not open the local folder picker", fallback: "path" }, 500);
+        }
+      }
+
+      if (pathname === "/api/workspaces/register") {
+        try {
+          const body = await readJsonRequest(req, 32_000);
+          const registered = registerUserWorkspace(
+            localRegistryPath,
+            typeof body.path === "string" ? body.path : "",
+            typeof body.name === "string" ? body.name : undefined,
+          );
+          return sendJson(registered, registered.created ? 201 : 200);
+        } catch (err: any) {
+          if (err?.message === "INVALID_JSON") return sendJson({ error: "Invalid JSON body" }, 400);
+          if (err?.message === "REQUEST_TOO_LARGE") return sendJson({ error: "Request body is too large" }, 413);
+          if (["INVALID_WORKSPACE_PATH", "WORKSPACE_PATH_NOT_ABSOLUTE", "WORKSPACE_NOT_FOUND", "WORKSPACE_NOT_DIRECTORY", "WORKSPACE_UNAVAILABLE"].includes(err?.message)) {
+            return sendJson({ error: "Choose an existing local directory" }, 400);
+          }
+          return sendJson({ error: err?.message || "Workspace registration failed" }, 500);
+        }
       }
 
       // 3. GET /api/state
@@ -1026,7 +1470,305 @@ export function createDashboardServer(options: DashboardOptions = {}) {
         }
       }
 
-      // 7. GET /bundle.js (Local offline React bundle from fixed installation path)
+      // 7. GET /api/project-index
+      if (pathname === "/api/project-index") {
+        const wsParam = parsedUrl.searchParams.get("workspace");
+        try {
+          const target = getTargetWorkspace(wsParam);
+          return sendJson(buildProjectIndex(target.root));
+        } catch (err: any) {
+          if (err?.message === "UNREGISTERED") {
+            return sendJson({ error: "Workspace is not registered" }, 403);
+          }
+          if (err?.message === "UNAVAILABLE") {
+            return sendJson({ error: "Workspace is unavailable" }, 404);
+          }
+          return sendJson({ error: err?.message || "Index failed" }, 500);
+        }
+      }
+
+      // 8. GET /api/project-file
+      if (pathname === "/api/project-file") {
+        const wsParam = parsedUrl.searchParams.get("workspace");
+        const requestedPath = parsedUrl.searchParams.get("path");
+        if (!requestedPath) return sendJson({ error: "Missing path" }, 400);
+        try {
+          const target = getTargetWorkspace(wsParam);
+          return sendJson(readSafeProjectFile(target.root, requestedPath));
+        } catch (err: any) {
+          if (err?.message === "UNREGISTERED" || err?.message === "UNSAFE_PATH") {
+            return sendJson({ error: "Access denied" }, 403);
+          }
+          if (err?.message === "UNAVAILABLE") {
+            return sendJson({ error: "Workspace is unavailable" }, 404);
+          }
+          return sendJson({ error: err?.message || "File read failed" }, 500);
+        }
+      }
+
+      // 9. GET /api/relationships
+      if (pathname === "/api/relationships") {
+        const wsParam = parsedUrl.searchParams.get("workspace");
+        const requestedPath = parsedUrl.searchParams.get("path");
+        if (!requestedPath) return sendJson({ error: "Missing path" }, 400);
+        try {
+          const target = getTargetWorkspace(wsParam);
+          return sendJson({
+            relationships: extractFileRelationships(target.root, requestedPath),
+          });
+        } catch (err: any) {
+          if (err?.message === "UNREGISTERED" || err?.message === "UNSAFE_PATH") {
+            return sendJson({ error: "Access denied" }, 403);
+          }
+          if (err?.message === "UNAVAILABLE") {
+            return sendJson({ error: "Workspace is unavailable" }, 404);
+          }
+          return sendJson({ relationships: [] });
+        }
+      }
+
+      if (pathname === "/api/project-flow") {
+        const wsParam = parsedUrl.searchParams.get("workspace");
+        try {
+          const target = getTargetWorkspace(wsParam);
+          return sendJson({ flow: buildProjectFlow(target.root) });
+        } catch (err: any) {
+          if (err?.message === "UNREGISTERED") return sendJson({ error: "Workspace is not registered" }, 403);
+          if (err?.message === "UNAVAILABLE") return sendJson({ error: "Workspace is unavailable" }, 404);
+          return sendJson({ error: err?.message || "Project flow failed" }, 500);
+        }
+      }
+
+      if (pathname === "/api/harness-flow") {
+        const wsParam = parsedUrl.searchParams.get("workspace");
+        try {
+          const target = getTargetWorkspace(wsParam);
+          const providers = await discoverProviderStates();
+          const antigravity = providers.find((provider) => provider.id === "antigravity");
+          let stage = "IDLE";
+          const targetStatePath = join(target.root, ".continuity", "state.json");
+          if (existsSync(targetStatePath)) {
+            try { stage = JSON.parse(readFileSync(targetStatePath, "utf8")).stage || "IDLE"; } catch {}
+          }
+          const checkpointActive = stage === "CHECKPOINT_1" || stage === "CHECKPOINT_2";
+          return sendJson({
+            steps: [
+              { id: "workspace", label: "Workspace", status: "complete", detail: target.root },
+              { id: "index", label: "Safe index", status: "complete", detail: "Secret, binary, vendor, and generated paths filtered" },
+              { id: "context", label: "Selected context", status: "current", detail: "Choose safe files and write a prompt" },
+              {
+                id: "provider",
+                label: "Provider route",
+                status: antigravity?.status === "available" ? "ready" : "unavailable",
+                detail: antigravity?.detail || "No provider available",
+              },
+              { id: "proposal", label: "Proposal / diff", status: "future", detail: "Antigravity output remains review-only" },
+              {
+                id: "checkpoint",
+                label: "Human checkpoint",
+                status: checkpointActive ? "current" : "future",
+                detail: checkpointActive ? `Workflow stage: ${stage}` : "Required before application",
+              },
+              { id: "apply", label: "Apply later", status: "disabled", detail: "Direct application is not enabled in this change" },
+            ],
+          });
+        } catch (err: any) {
+          if (err?.message === "UNREGISTERED") return sendJson({ error: "Workspace is not registered" }, 403);
+          if (err?.message === "UNAVAILABLE") return sendJson({ error: "Workspace is unavailable" }, 404);
+          return sendJson({ error: err?.message || "Harness flow failed" }, 500);
+        }
+      }
+
+      // 10. GET /api/providers
+      if (pathname === "/api/providers") {
+        return sendJson({ providers: await discoverProviderStates() });
+      }
+
+      // 11. GET/POST /api/sessions (local metadata only)
+      if (pathname === "/api/sessions") {
+        const wsParam = parsedUrl.searchParams.get("workspace");
+        try {
+          const target = getTargetWorkspace(wsParam);
+          const workspaceId = wsParam || "default";
+          if (req.method === "POST") {
+            const body = await readJsonRequest(req);
+            const session = createHarnessSession(
+              target.root,
+              workspaceId,
+              typeof body.title === "string" ? body.title : "New session",
+              (typeof body.mode === "string" ? body.mode : "auto") as OrchestrationMode,
+            );
+            return sendJson({ session }, 201);
+          }
+          return sendJson({
+            sessions: loadHarnessSessions(target.root, workspaceId),
+          });
+        } catch (err: any) {
+          if (err?.message === "UNREGISTERED") {
+            return sendJson({ error: "Workspace is not registered" }, 403);
+          }
+          if (err?.message === "UNAVAILABLE") {
+            return sendJson({ error: "Workspace is unavailable" }, 404);
+          }
+          if (err?.message === "INVALID_JSON") {
+            return sendJson({ error: "Invalid JSON body" }, 400);
+          }
+          if (err?.message === "REQUEST_TOO_LARGE") {
+            return sendJson({ error: "Request body is too large" }, 413);
+          }
+          if (err?.message === "INVALID_MODE") {
+            return sendJson({ error: "Unsupported orchestration mode" }, 400);
+          }
+          return sendJson({ error: err?.message || "Session operation failed" }, 500);
+        }
+      }
+
+      // 12. POST /api/context-packet (does not invoke a model or write project files)
+      if (pathname === "/api/context-packet") {
+        if (req.method !== "POST") {
+          return sendJson({ error: "Use POST for context packet assembly" }, 405);
+        }
+        const wsParam = parsedUrl.searchParams.get("workspace");
+        try {
+          const target = getTargetWorkspace(wsParam);
+          const body = await readJsonRequest(req);
+          const packet = buildContextPacket(target.root, wsParam || "default", {
+            prompt: typeof body.prompt === "string" ? body.prompt : "",
+            selectedPaths: Array.isArray(body.selectedPaths)
+              ? body.selectedPaths.filter((value: unknown) => typeof value === "string")
+              : [],
+            mode: (typeof body.mode === "string" ? body.mode : "auto") as OrchestrationMode,
+          });
+          return sendJson({ packet });
+        } catch (err: any) {
+          if (err?.message === "UNREGISTERED" || err?.message === "UNSAFE_PATH") {
+            return sendJson({ error: "Access denied" }, 403);
+          }
+          if (err?.message === "INVALID_JSON") {
+            return sendJson({ error: "Invalid JSON body" }, 400);
+          }
+          if (err?.message === "REQUEST_TOO_LARGE") {
+            return sendJson({ error: "Request body is too large" }, 413);
+          }
+          return sendJson({ error: err?.message || "Context assembly failed" }, 500);
+        }
+      }
+
+      if (pathname === "/api/antigravity/test") {
+        const wsParam = parsedUrl.searchParams.get("workspace");
+        try {
+          const target = getTargetWorkspace(wsParam);
+          const packet = buildContextPacket(target.root, wsParam || "default", {
+            prompt: "Reply with exactly: HARNESS_READY",
+            selectedPaths: [],
+            mode: "antigravity",
+            maxCharacters: 8_000,
+          });
+          const result = await runAntigravity(packet, {
+            timeoutMs: 90_000,
+            runtimeRoot: join(workspaceRoot, ".continuity", "runtime", "agy"),
+          });
+          return sendJson({ result });
+        } catch (err: any) {
+          if (err?.message === "ANTIGRAVITY_NOT_INSTALLED") return sendJson({ error: "Antigravity CLI is not installed" }, 404);
+          if (err?.message === "ANTIGRAVITY_TIMEOUT") return sendJson({ error: "Antigravity connection test timed out" }, 504);
+          return sendJson({ error: err?.message || "Antigravity connection test failed" }, 500);
+        }
+      }
+
+      if (pathname === "/api/antigravity/cancel") {
+        try {
+          const body = await readJsonRequest(req, 8_000);
+          const runId = typeof body.runId === "string" ? body.runId : "";
+          const controller = activeAntigravityRuns.get(runId);
+          if (!controller) return sendJson({ canceled: false, error: "Run is not active" }, 404);
+          controller.abort();
+          return sendJson({ canceled: true });
+        } catch (err: any) {
+          return sendJson({ error: err?.message || "Cancellation failed" }, 400);
+        }
+      }
+
+      if (pathname === "/api/antigravity/run") {
+        const wsParam = parsedUrl.searchParams.get("workspace");
+        let runId = "";
+        try {
+          const target = getTargetWorkspace(wsParam);
+          const body = await readJsonRequest(req);
+          runId = typeof body.runId === "string" && /^[a-zA-Z0-9-]{8,80}$/.test(body.runId)
+            ? body.runId
+            : `run-${Date.now()}`;
+          if (activeAntigravityRuns.has(runId)) return sendJson({ error: "Run id is already active" }, 409);
+          const sessionId = typeof body.sessionId === "string" ? body.sessionId : "";
+          const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+          if (!sessionId || !prompt) return sendJson({ error: "Session and prompt are required" }, 400);
+          const workspaceId = wsParam || "default";
+          let session = loadHarnessSessions(target.root, workspaceId).find((item) => item.id === sessionId);
+          if (!session) return sendJson({ error: "Session was not found in this workspace" }, 404);
+          const packet = buildContextPacket(target.root, workspaceId, {
+            prompt,
+            selectedPaths: Array.isArray(body.selectedPaths)
+              ? body.selectedPaths.filter((value: unknown) => typeof value === "string")
+              : [],
+            mode: "antigravity",
+            maxCharacters: 60_000,
+          });
+          session = updateHarnessSession(target.root, workspaceId, sessionId, (current) => ({
+            ...current,
+            messages: [
+              ...(current.messages ?? []),
+              { id: `user-${runId}`, role: "user", content: prompt, createdAt: new Date().toISOString() },
+            ],
+          }));
+          const controller = new AbortController();
+          activeAntigravityRuns.set(runId, controller);
+          const result = await runAntigravity(packet, {
+            conversationId: session.providerConversations?.antigravity,
+            signal: controller.signal,
+            timeoutMs: 180_000,
+            runtimeRoot: join(workspaceRoot, ".continuity", "runtime", "agy"),
+          });
+          const updated = updateHarnessSession(target.root, workspaceId, sessionId, (current) => ({
+            ...current,
+            providerConversations: result.conversationId
+              ? { ...(current.providerConversations ?? {}), antigravity: result.conversationId }
+              : current.providerConversations,
+            messages: [
+              ...(current.messages ?? []),
+              {
+                id: `assistant-${runId}`,
+                role: "assistant",
+                provider: "antigravity",
+                content: result.response || result.error || result.status,
+                createdAt: new Date().toISOString(),
+                usage: result.usage as Record<string, number> | undefined,
+                error: result.error,
+              },
+            ],
+            proposals: [
+              ...(current.proposals ?? []),
+              ...result.proposals.map((proposal, index) => ({
+                ...proposal,
+                id: `${runId}-${index}`,
+                provider: "antigravity" as const,
+                createdAt: new Date().toISOString(),
+              })),
+            ],
+          }));
+          return sendJson({ runId, result, session: updated });
+        } catch (err: any) {
+          if (err?.message === "UNREGISTERED" || err?.message === "UNSAFE_PATH") return sendJson({ error: "Access denied" }, 403);
+          if (err?.message === "ANTIGRAVITY_NOT_INSTALLED") return sendJson({ error: "Antigravity CLI is not installed" }, 404);
+          if (err?.message === "ANTIGRAVITY_TIMEOUT") return sendJson({ error: "Antigravity timed out" }, 504);
+          if (err?.message === "ANTIGRAVITY_OUTPUT_LIMIT") return sendJson({ error: "Antigravity output exceeded the safety limit" }, 413);
+          if (err?.message === "SESSION_NOT_FOUND") return sendJson({ error: "Session was not found in this workspace" }, 404);
+          return sendJson({ error: err?.message || "Antigravity run failed" }, 500);
+        } finally {
+          if (runId) activeAntigravityRuns.delete(runId);
+        }
+      }
+
+      // GET /bundle.js (Local offline React bundle from fixed installation path)
       if (pathname === "/bundle.js" || pathname === "/dist/public/bundle.js") {
         const moduleDir = dirname(fileURLToPath(import.meta.url));
         const candidates = [
@@ -1052,7 +1794,7 @@ export function createDashboardServer(options: DashboardOptions = {}) {
         );
       }
 
-      // 7. GET / or UI route
+      // 14. GET / or UI route
       if (pathname === "/" || pathname === "/index.html") {
         const html = getDashboardHtml();
         return sendContent(html, 200, "text/html; charset=utf-8");
@@ -1067,7 +1809,7 @@ export function createDashboardServer(options: DashboardOptions = {}) {
     server,
     port,
     workspaceRoot,
-    registry,
+    registry: getRegistry(),
     start: () =>
       new Promise<number>((resolvePromise, reject) => {
         // Bind strictly to 127.0.0.1
@@ -1079,10 +1821,13 @@ export function createDashboardServer(options: DashboardOptions = {}) {
         });
         server.on("error", reject);
       }),
-    stop: () =>
-      new Promise<void>((resolvePromise, reject) => {
+    stop: () => {
+      for (const controller of activeAntigravityRuns.values()) controller.abort();
+      activeAntigravityRuns.clear();
+      return new Promise<void>((resolvePromise, reject) => {
         server.close((err) => (err ? reject(err) : resolvePromise()));
-      }),
+      });
+    },
   };
 }
 

@@ -1,0 +1,68 @@
+
+> continuity-core@0.1.0 test
+> npm run build && node --test dist/*.test.js
+
+
+> continuity-core@0.1.0 build
+> tsc
+
+TAP version 13
+# [Worker P1] PID: 25248 completed 25 mutations
+# [Worker P2] PID: 16016 completed 25 mutations
+# Subtest: concurrent multi-process test: 2 parallel Node child processes executing 25 mutations each (50 total) with zero lost updates
+ok 1 - concurrent multi-process test: 2 parallel Node child processes executing 25 mutations each (50 total) with zero lost updates
+  ---
+  duration_ms: 1495.7268
+  ...
+# Subtest: segment-aware path containment and prefix-sibling rejection
+ok 2 - segment-aware path containment and prefix-sibling rejection
+  ---
+  duration_ms: 0.8345
+  ...
+# Subtest: allowlist artifact validation with strict containment
+ok 3 - allowlist artifact validation with strict containment
+  ---
+  duration_ms: 0.2936
+  ...
+# Subtest: dashboard server binds to 127.0.0.1, omits wildcard CORS, and runs 100% offline
+ok 4 - dashboard server binds to 127.0.0.1, omits wildcard CORS, and runs 100% offline
+  ---
+  duration_ms: 480.9804
+  ...
+# [Process A] PID: 25212 | State: D:\\harness_agent\\.continuity\\test-multiprocess-state.json | PASS: Process A created state, registered task, and requested checkpoint.
+# [Process B] PID: 18604 | State: D:\\harness_agent\\.continuity\\test-multiprocess-state.json | PASS: Process B read state from A, approved checkpoint, set IMPL_DONE, and requested impl_review.
+# [Process C] PID: 14332 | State: D:\\harness_agent\\.continuity\\test-multiprocess-state.json | PASS: Process C confirmed changes from B, approved impl_review, and verified final stage DONE.
+# Subtest: multi-process OS test with 3 distinct Node processes (different PIDs) verifying state handoff
+ok 5 - multi-process OS test with 3 distinct Node processes (different PIDs) verifying state handoff
+  ---
+  duration_ms: 665.5606
+  ...
+# Subtest: enforces checkpoints and scope checks
+ok 6 - enforces checkpoints and scope checks
+  ---
+  duration_ms: 25.3188
+  ...
+# Subtest: enforces blocker gate on checkpoint approval
+ok 7 - enforces blocker gate on checkpoint approval
+  ---
+  duration_ms: 15.2263
+  ...
+# Subtest: enforces universal blocker gate on setStatus transitions (including non-terminal transitions)
+ok 8 - enforces universal blocker gate on setStatus transitions (including non-terminal transitions)
+  ---
+  duration_ms: 26.3555
+  ...
+# Subtest: reloads fresh disk state across independent Store instances (no stale cache)
+ok 9 - reloads fresh disk state across independent Store instances (no stale cache)
+  ---
+  duration_ms: 9.3354
+  ...
+1..9
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1657.9317

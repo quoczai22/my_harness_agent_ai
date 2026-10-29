@@ -1,0 +1,14 @@
+{
+  "verdict": "APPROVE",
+  "findings": [],
+  "tests": {
+    "command": "npm test",
+    "exitCode": 0
+  },
+  "state": {
+    "stage": "IDLE",
+    "pendingCheckpoint": null,
+    "blockers": []
+  },
+  "commitReady": true
+}

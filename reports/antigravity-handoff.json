@@ -1,0 +1,23 @@
+{
+  "changeId": "offline-code-assistant",
+  "checkpointId": "cp_1788633984917_nw8lh",
+  "stage": "CHECKPOINT_2",
+  "filesModified": [
+    "extensions/continuity-vscode/src/assistant.ts",
+    "extensions/continuity-vscode/src/contextGuard.ts",
+    "extensions/continuity-vscode/src/ollamaClient.ts",
+    "extensions/continuity-vscode/src/assistantStore.ts",
+    "extensions/continuity-vscode/src/sidebarViews.ts",
+    "extensions/continuity-vscode/src/diffManager.ts",
+    "extensions/continuity-vscode/src/extension.ts",
+    "extensions/continuity-vscode/src/assistant.test.ts",
+    "extensions/continuity-vscode/package.json",
+    "openspec/changes/offline-code-assistant/tasks.md"
+  ],
+  "tests": {
+    "extensionTests": "10/10 pass",
+    "coreTests": "34/34 pass",
+    "vsixPackaging": "continuity-workflow.vsix verified (21 files, 27.61 KB)"
+  },
+  "status": "All 6 tasks completed. Awaiting impl_review checkpoint approval. Stopped before commit/push."
+}
