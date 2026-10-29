@@ -79,6 +79,12 @@ try {
   $stub.listener.Stop(); $stub.ps.Dispose()
   Assert ($answer -ceq 'Xin chào, đây là màn hình đăng nhập') 'charset-less UTF-8 response decoded, <think> stripped'
   Assert ($sent -match '"reasoning_effort":"none"' -and $sent -match '"model":"qwen3.5-2b"') 'request disables reasoning and names the model'
+  $lengthStub = Start-StubServer '{"choices":[{"message":{"content":"```dart\nclass A {"},"finish_reason":"length"}]}'
+  $script:LmConfig.baseUrl = "http://127.0.0.1:$($lengthStub.port)"
+  $lengthResult = Invoke-LmCode 'sys' 'write Dart' 50
+  $null = $lengthStub.ps.EndInvoke($lengthStub.handle)
+  $lengthStub.listener.Stop(); $lengthStub.ps.Dispose()
+  Assert ($lengthResult.finishReason -eq 'length' -and $lengthResult.text -notmatch 'Bị cắt') 'code API preserves length metadata without appending warning to source'
   $script:LmConfig.baseUrl = $saved
 
   Section 'PDF intake'
@@ -169,6 +175,17 @@ try {
   Assert ($rules -match 'TextFormField có validator' -and $rules -match 'Product' -and $rules -match 'package:product_app/') 'prompt rules carry validator, model and package requirements'
   Assert ((Get-Prompt $s 'Câu 3' 'lib/screens/add_product_screen.dart') -match 'QUY TẮC BẮT BUỘC') 'rules included in the prompt'
   Assert ((Test-ExamNeedsValidation 'mật khẩu tối thiểu 6 ký tự') -and !(Test-ExamNeedsValidation 'hiển thị danh sách')) 'validation requirement detection'
+  $bareField = "class AddProductScreen { Widget build() => TextField(); }"
+  $missingForm = @(Get-ValidationStructureIssues $s 'lib/screens/add_product_screen.dart' $bareField)
+  Assert ($missingForm -contains 'Form' -and $missingForm -contains 'validator' -and $missingForm -contains 'TextField không có validator') 'validation screen detects bare TextField and missing Form pieces'
+  Assert (@(Get-ValidationStructureIssues $s 'lib/screens/product_detail_screen.dart' $bareField).Count -eq 0) 'validation gate stays on exam-matched screen'
+  $partial = Get-DartCodeCandidate ([pscustomobject]@{ text=('```dart' + "`nclass AddProductScreen {`n[Bị cắt do giới hạn độ dài; hỏi tiếp phần còn lại.]"); finishReason='length' })
+  Assert ($partial.incomplete -and $partial.code.StartsWith('class AddProductScreen') -and $partial.code -notmatch 'Bị cắt|```') 'truncated unmatched fence strips warning and is not complete Dart'
+  Assert ((Get-DartCodeCandidate ([pscustomobject]@{ text='class A {}'; finishReason='length' })).incomplete) 'length finish is incomplete even if braces look balanced'
+  $complete = Get-DartCodeCandidate ([pscustomobject]@{ text=('```dart' + "`nclass X {}`n" + '```'); finishReason='stop' })
+  Assert (!$complete.incomplete -and $complete.code -eq 'class X {}') 'complete fenced Dart remains usable'
+  $undefinedEvidence = Get-UndefinedNameEvidence "class _NoteListScreenState {`n final List<String> _notes = [];`n}" @([pscustomobject]@{ code='undefined_identifier'; message="Undefined name 'notes'." }) $project
+  Assert ($undefinedEvidence -match 'notes' -and $undefinedEvidence -match '_notes' -and $undefinedEvidence -match 'lib/models/') 'undefined-name hint cites analyzer symbol and real declarations'
   $repaired = Repair-DartCode "import 'package:my_app/models/product.dart';`nimport 'package:http/http.dart';`nclass A extends StatelessWidget { Widget build(BuildContext c) => Scaffold(); }" 'lib/a.dart' $project
   Assert ($repaired.code.Contains("import 'package:product_app/models/product.dart'") -and $repaired.code.StartsWith("import 'package:flutter/material.dart';") -and $repaired.code.Contains('package:http/http.dart') -and $repaired.fixes.Count -eq 2) 'wrong own-package import and missing material import repaired; unknown package left for /check'
 
@@ -245,6 +262,16 @@ try {
   Assert (($loop.history -join ',') -eq '1,1,1' -and $loop.errors.Count -eq 1) 'repair stops after two rounds and keeps reporting remaining errors'
   $loop = Repair-WithAnalyzer $s 'lib/x.dart' 'BROKEN' -Rounds 0 -Analyzer $fakeAnalyzer
   Assert (($loop.history -join ',') -eq '1' -and $loop.code -eq 'BROKEN') 'rounds 0 only checks deterministic output'
+  $script:analyses = 0
+  $loop = Repair-WithAnalyzer $s 'lib/x.dart' 'BROKEN' -Model { param($p) [pscustomobject]@{ text='class A {}'; finishReason='length' } } -Analyzer $fakeAnalyzer
+  Assert ($loop.incomplete -and !$loop.tested -and $script:analyses -eq 1) 'truncated repair output is not sent back to analyzer'
+  $script:formCalls = 0
+  $formModel = { param($p) $script:formCalls++; if ($p -match 'THIẾU:') { 'class AddProductScreen { final _formKey = GlobalKey<FormState>(); Widget build() => Form(child: TextFormField(validator: (value) => value == null ? "required" : null)); void submit() { _formKey.currentState!.validate(); } }' } else { 'BROKEN' } }
+  $formLoop = Repair-WithAnalyzer $s 'lib/screens/add_product_screen.dart' $bareField -Model $formModel -Analyzer $fakeAnalyzer
+  Assert ($script:formCalls -eq 1 -and !$formLoop.validationIssues.Count) 'validation gate performs one bounded targeted repair'
+  $script:formCalls = 0
+  $formLoop = Repair-WithAnalyzer $s 'lib/screens/add_product_screen.dart' $bareField -Model { param($p) $script:formCalls++; $bareField } -Analyzer $fakeAnalyzer
+  Assert ($script:formCalls -eq 2 -and $formLoop.validationIssues.Count -gt 0) 'unresolved Form requirement is reported after two model rounds'
   $machine = @(ConvertFrom-AnalyzerOutput @('ERROR|COMPILE_TIME_ERROR|URI_DOES_NOT_EXIST|C:\\t\\x\\lib\\main.dart|2|8|30|Target of URI does not exist.') 'C:\t\x')
   Assert ($machine[0].file -eq 'lib/main.dart' -and $machine[0].length -eq 30 -and $machine[0].code -eq 'uri_does_not_exist' -and $machine[0].severity -eq 'error') 'machine-format analyzer lines parsed with length'
   $qfSource = "import 'package:flutter/material.dart';`nimport 'package:cupertino_icons.dart';`nvoid f(C? c, double? v) {`n  if (v <= 0) {}`n  g(c.t);`n  h(name: c!.t ?? x);`n}`nWidget w() => const S();"
@@ -354,7 +381,10 @@ try {
          files=@(@{ rel='lib/screens/login_screen.dart'; ask='Màn hình LoginScreen có Form với TextFormField email (không trống, phải có @) và mật khẩu (tối thiểu 6 ký tự, obscureText). Đăng nhập hợp lệ thì Navigator.pushReplacementNamed(context, ''/note_list'').' },
                  @{ rel='lib/screens/note_list_screen.dart'; ask='Màn hình NoteListScreen là StatefulWidget hiển thị List<Note> bằng ListView, nút FloatingActionButton thêm ghi chú mới bằng setState.' }) }
     )
+    $fileRates = [Collections.Generic.List[int]]::new(); $projectRates = [Collections.Generic.List[int]]::new()
     for ($run = 1; $run -le $LiveRuns; $run++) {
+      $beforeFiles = $script:liveFiles; $beforeCleanFiles = $script:liveCleanFiles
+      $beforeProjects = $script:liveProjects; $beforeCleanProjects = $script:liveCleanProjects
       foreach ($case in $cases) {
         $project = Copy-Fixture $case.fixture (Join-Path $tmp "live-$run-$($case.package)")
         $pubPath = Join-Path $project 'pubspec.yaml'
@@ -371,15 +401,18 @@ try {
         if ($jsonSamples.Count) { Save-Draft $ls $case.model.rel (New-DartModelCode $case.model.cls $jsonSamples[0].value) | Out-Null; $notes.Add("model $($case.model.cls): from JSON sample") }
         else { $notes.Add("model $($case.model.cls): no valid JSON sample in the confirmed exam text") }
         foreach ($f in $case.files) {
+          $script:liveFiles++
           $timer = [Diagnostics.Stopwatch]::StartNew()
           try {
-            $raw = Invoke-LmChat $script:SystemPrompt (Get-Prompt $ls "Chỉ viết toàn bộ nội dung file $($f.rel) bằng Dart/Flutter, không giải thích, không Markdown. $($f.ask)" $f.rel) 3000
-            $fixed = Repair-DartCode (Remove-CodeFence $raw) $f.rel (Get-ProjectModel $ls)
+            $candidate = Get-DartCodeCandidate (Invoke-LmCode $script:SystemPrompt (Get-Prompt $ls "Chỉ viết toàn bộ nội dung file $($f.rel) bằng Dart/Flutter, không giải thích, không Markdown. $($f.ask)" $f.rel) 3000)
+            if ($candidate.incomplete) { $notes.Add("$($f.rel): FILE CHƯA HOÀN CHỈNH — $($candidate.note); bỏ qua compile-repair"); continue }
+            $fixed = Repair-DartCode $candidate.code $f.rel (Get-ProjectModel $ls)
             $compiled = Repair-WithAnalyzer $ls $f.rel $fixed.code
+            if ($compiled.incomplete) { $notes.Add("$($f.rel): FILE CHƯA HOÀN CHỈNH sau sửa — $($compiled.note); bỏ qua phân tích tiếp"); continue }
             Save-Draft $ls $f.rel $compiled.code | Out-Null
             $errTrail = if ($compiled.tested) { ' | lỗi biên dịch qua các vòng: ' + ($compiled.history -join ' -> ') + " (sửa nhanh: $($compiled.quickFixes.Count))" } else { ' | chưa kiểm biên dịch' }
             $notes.Add("$($f.rel): $([int]$timer.Elapsed.TotalSeconds)s$(if ($fixed.fixes.Count) { ' (sửa: ' + ($fixed.fixes -join '; ') + ')' })$errTrail")
-            $script:liveFiles++; if ($compiled.tested -and !$compiled.errors.Count) { $script:liveCleanFiles++ }
+            if ($compiled.tested -and !$compiled.errors.Count) { $script:liveCleanFiles++ }
           } catch { $notes.Add("$($f.rel): FAILED $($_.Exception.Message)") }
         }
         $mainCode = New-MainDartCode (Get-ProjectModel $ls) $case.screens $case.package
@@ -404,8 +437,14 @@ try {
         Assert ((Get-TreeHash $project) -eq $hash) "live run $run $($case.package): project unchanged"
         Write-Host "  run $run $($case.package): failed-checks=$(@($check | Where-Object { $_.status -eq 'failed' }).Count)"
       }
+      $runFileCount = $script:liveFiles - $beforeFiles; $runCleanFileCount = $script:liveCleanFiles - $beforeCleanFiles
+      $runProjectCount = $script:liveProjects - $beforeProjects; $runCleanProjectCount = $script:liveCleanProjects - $beforeCleanProjects
+      $fileRates.Add($runCleanFileCount); $projectRates.Add($runCleanProjectCount)
+      $report.Add("- Run $run summary: files $runCleanFileCount/$runFileCount; projects $runCleanProjectCount/$runProjectCount")
     }
     $report.Insert(3, "- Tổng kết: $($script:liveCleanFiles)/$($script:liveFiles) file AI viết không còn lỗi biên dịch sau vòng tự sửa; $($script:liveCleanProjects)/$($script:liveProjects) project biên dịch sạch toàn bộ.")
+    $fileRange = $fileRates | Measure-Object -Minimum -Maximum; $projectRange = $projectRates | Measure-Object -Minimum -Maximum
+    $report.Insert(4, "- Khoảng min–max mỗi lượt: file $($fileRange.Minimum)/5–$($fileRange.Maximum)/5; project $($projectRange.Minimum)/2–$($projectRange.Maximum)/2.")
     $resultDir = Join-Path $PSScriptRoot 'results'
     New-Item -ItemType Directory -Force -Path $resultDir | Out-Null
     $reportPath = Join-Path $resultDir "live-$stamp.md"

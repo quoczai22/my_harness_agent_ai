@@ -100,23 +100,23 @@
                   },
                   {
                       "path":  "Flutter-Exam.ps1",
-                      "bytes":  10692,
-                      "sha256":  "c8bef67afebbc9855515058bda1ed1325ebc4d52cc516ab4b5e6ce7fdf2bc1e9"
+                      "bytes":  11417,
+                      "sha256":  "ce68634211b28f9fa58917c99b1951ebb340942467906050087c8c38ae74273b"
                   },
                   {
                       "path":  "lib/FlutterExam.ps1",
-                      "bytes":  60684,
-                      "sha256":  "58204e5fabbdabd634e4cd3aeced097f46c6d7d530442fa73195744350224fc1"
+                      "bytes":  65930,
+                      "sha256":  "2d7c959425b29c3144656853aeb62b97f14b8f21f56dce2592bd55629d6eb175"
                   },
                   {
                       "path":  "lib/LmStudio.ps1",
-                      "bytes":  7225,
-                      "sha256":  "549f74a590082eae408fa1e7a02a378a84a41566ec8196a9789569d25a473bc5"
+                      "bytes":  7695,
+                      "sha256":  "278309c5e341e6ac72819ff50de9f9a0bafc73700488b484998d57cc98fb2849"
                   },
                   {
                       "path":  "README.md",
-                      "bytes":  5503,
-                      "sha256":  "d4df717c70e319d95ee5c8a0734e0bd06baa27ae8de6f063ea013051ad28eade"
+                      "bytes":  6508,
+                      "sha256":  "a3258dd4820a97f4d6f31c4e147afa5777ea3224dddbfb23a3e02b5d94f0a503"
                   },
                   {
                       "path":  "Start-Flutter-Exam.cmd",
@@ -230,8 +230,8 @@
                   },
                   {
                       "path":  "tests/Test-FlutterExam.ps1",
-                      "bytes":  39660,
-                      "sha256":  "ede0fc51d25a3cbe5f0b52155b70d80c1af723cd6b396d0aaf8d75076237d76a"
+                      "bytes":  44608,
+                      "sha256":  "52abcef40616fdcb5789634c607fc4d83735953a66ca39b5efb0bb48bad07dae"
                   },
                   {
                       "path":  "tools/pdf/api-ms-win-core-console-l1-1-0.dll",

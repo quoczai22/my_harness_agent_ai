@@ -99,7 +99,7 @@ function Initialize-LmStudio([switch]$Quiet) {
 function Remove-ThinkBlock([string]$text) {
   return ([regex]::Replace($text, '(?s)<think>.*?</think>', '')).Trim()
 }
-function Invoke-LmChat([string]$system, [string]$user, [int]$maxTokens = 1200, [string[]]$imagePaths = @(), [int]$timeoutSec = 300) {
+function Invoke-LmChatResult([string]$system, [string]$user, [int]$maxTokens = 1200, [string[]]$imagePaths = @(), [int]$timeoutSec = 300) {
   $content = $user
   if ($imagePaths.Count) {
     $parts = [Collections.Generic.List[object]]::new()
@@ -120,6 +120,13 @@ function Invoke-LmChat([string]$system, [string]$user, [int]$maxTokens = 1200, [
   $result = Invoke-LmHttp 'POST' '/v1/chat/completions' $body $timeoutSec
   $answer = Remove-ThinkBlock ([string]$result.choices[0].message.content)
   if (!$answer) { throw 'Model không trả nội dung (có thể hết token khi đang suy nghĩ). Hỏi ngắn hơn.' }
-  if ($result.choices[0].finish_reason -eq 'length') { $answer += "`n[Bị cắt do giới hạn độ dài; hỏi tiếp phần còn lại.]" }
-  return $answer
+  return [pscustomobject]@{ text=$answer; finishReason=[string]$result.choices[0].finish_reason }
+}
+function Invoke-LmChat([string]$system, [string]$user, [int]$maxTokens = 1200, [string[]]$imagePaths = @(), [int]$timeoutSec = 300) {
+  $result = Invoke-LmChatResult $system $user $maxTokens $imagePaths $timeoutSec
+  if ($result.finishReason -eq 'length') { return $result.text + "`n[Bị cắt do giới hạn độ dài; hỏi tiếp phần còn lại.]" }
+  return $result.text
+}
+function Invoke-LmCode([string]$system, [string]$user, [int]$maxTokens = 3000) {
+  return Invoke-LmChatResult $system $user $maxTokens @() 300
 }

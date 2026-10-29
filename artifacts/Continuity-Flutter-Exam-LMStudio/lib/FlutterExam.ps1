@@ -413,7 +413,28 @@ function Get-ExamRules($s, $project) {
 function Remove-CodeFence([string]$code) {
   $fenced = [regex]::Match($code, '(?s)```[^\r\n]*\r?\n(.*?)\r?\n```')
   if ($fenced.Success) { return $fenced.Groups[1].Value.Trim() }
+  # A length-limited completion may have only the opening fence.
+  $open = [regex]::Match($code, '^\s*```[^\r\n]*\r?\n')
+  if ($open.Success) { $code = $code.Substring($open.Length) }
   return $code.Trim()
+}
+function Get-DartCodeCandidate($response) {
+  # A string is accepted for existing test stubs; production code passes structured LM metadata.
+  $raw = if ($response -is [string]) { $response } else { [string]$response.text }
+  $finish = if ($response -is [string]) { '' } else { [string]$response.finishReason }
+  $warning = '(?m)^\[Bị cắt do giới hạn độ dài; hỏi tiếp phần còn lại\.\]\s*$'
+  $hadWarning = [regex]::IsMatch($raw, $warning)
+  $code = Remove-CodeFence ([regex]::Replace($raw, $warning, ''))
+  # Ignore quoted strings and comments when checking class/function braces.
+  $structural = [regex]::Replace($code, '(?s)/\*.*?\*/|(?m)//[^\r\n]*|''(?:\\.|[^''\\])*''|"(?:\\.|[^"\\])*"', '')
+  $depth = 0; $badBraces = $false
+  foreach ($ch in $structural.ToCharArray()) {
+    if ($ch -eq '{') { $depth++ }
+    elseif ($ch -eq '}') { $depth--; if ($depth -lt 0) { $badBraces = $true; break } }
+  }
+  $incomplete = ($finish -eq 'length' -or $hadWarning -or $badBraces -or $depth -ne 0)
+  $reason = if ($finish -eq 'length' -or $hadWarning) { 'Model dừng vì giới hạn token; file có thể bị cắt.' } elseif ($incomplete) { 'Cấu trúc ngoặc của file chưa hoàn chỉnh.' } else { '' }
+  return [pscustomobject]@{ code=$code; incomplete=$incomplete; note=$reason; finishReason=$finish }
 }
 
 # ---------------------------------------------------------------- deterministic generators
@@ -912,16 +933,50 @@ $script:FixHints = @{
   'missing_required_argument' = 'Truyền đủ tham số bắt buộc của constructor/hàm.'
   'undefined_class' = 'Lớp không tồn tại; import đúng file hoặc dùng lớp có trong project.'
 }
+function Get-ValidationStructureIssues($s, [string]$rel, [string]$code) {
+  if ($rel -notmatch '^lib/screens/[^/]+\.dart$') { return @() }
+  $screen = ConvertTo-PascalCase ([IO.Path]::GetFileNameWithoutExtension($rel))
+  $segments = [regex]::Split([string]$s.exam, '(?im)(?=^\s*(?:Câu|Bài)\s*\d+\s*[:.\-)]\s*)')
+  $matching = @($segments | Where-Object { $_ -match [regex]::Escape($screen) })
+  if (-not $matching.Count -or -not (Test-ExamNeedsValidation ($matching -join "`n"))) { return @() }
+  $missing = [Collections.Generic.List[string]]::new()
+  if ($code -notmatch '\bForm\s*\(') { $missing.Add('Form') }
+  if ($code -notmatch 'GlobalKey\s*<\s*FormState\s*>') { $missing.Add('GlobalKey<FormState>') }
+  if ($code -notmatch '\bTextFormField\s*\(') { $missing.Add('TextFormField') }
+  if ($code -notmatch '\bvalidator\s*:') { $missing.Add('validator') }
+  if ($code -notmatch '\.validate\s*\(') { $missing.Add('validate() trước khi xử lý') }
+  if ($code -match '(?<!Form)\bTextField\s*\(') { $missing.Add('TextField không có validator') }
+  return @($missing)
+}
+function Get-UndefinedNameEvidence([string]$code, $errors, $project) {
+  $relevant = @($errors | Where-Object { $_.code -in @('undefined_identifier','undefined_getter') } | Select-Object -First 8)
+  if (-not $relevant.Count) { return '' }
+  $symbols = @($relevant | ForEach-Object { $m = [regex]::Match($_.message, "'([^']+)'"); if ($m.Success) { $m.Groups[1].Value } } | Select-Object -Unique)
+  $states = @(Get-ClassBodies $code | Where-Object { $_.name -match 'State$' })
+  $decls = @($states | ForEach-Object { $_.body -split "`r?`n" | Where-Object { $_ -match '^\s*(?:(?:late|final|static|const)\s+)*(?:[A-Za-z_][\w?<> ,]*\s+)?[_A-Za-z]\w*\s*(?:=|;)' } | Select-Object -First 12 })
+  $models = @($project.dart | Where-Object { $_.rel -match '^lib/models/' } | ForEach-Object { $_.rel })
+  return "Tên analyzer báo chưa tồn tại: $($symbols -join ', '). Khai báo field thực trong State: $(if ($decls.Count) { ($decls | ForEach-Object { $_.Trim() }) -join '; ' } else { '(không thấy)' }). File model thật: $(if ($models.Count) { $models -join ', ' } else { '(không có)' }). Chỉ dùng tên/thành viên có thật và đúng kiểu; không tự tạo field từ phỏng đoán."
+}
 function Repair-WithAnalyzer($s, [string]$rel, [string]$code, [int]$Rounds = 2,
-    [scriptblock]$Model = { param($p) Invoke-LmChat $script:SystemPrompt $p 3000 },
+    [scriptblock]$Model = { param($p) Invoke-LmCode $script:SystemPrompt $p 3000 },
     [scriptblock]$Analyzer = { param($session, $overrides) Invoke-SafeAnalyze $session $overrides }) {
   # Real compiler errors for this one file: mechanical quick fixes first, then up to $Rounds model rewrites.
   # The user still sees the final code and decides whether to SAVE it.
   $history = [Collections.Generic.List[int]]::new(); $quick = [Collections.Generic.List[string]]::new()
   $modelRounds = 0
   for ($iteration = 0; $iteration -lt 10; $iteration++) {
+    $validationIssues = @(Get-ValidationStructureIssues $s $rel $code)
+    if ($validationIssues.Count -and $modelRounds -lt $Rounds) {
+      $modelRounds++
+      $prompt = (Get-Prompt $s "Sửa file $rel theo đúng yêu cầu nhập liệu của đề." $rel) +
+        "`nFILE HIỆN TẠI:`n$code`n`nTHIẾU: $($validationIssues -join ', '). Phải dùng Form, GlobalKey<FormState>, TextFormField với validator đúng điều kiện trong đề và validate() trước khi xử lý. Chỉ trả về MỘT file Dart hoàn chỉnh, không Markdown."
+      $candidate = Get-DartCodeCandidate (& $Model $prompt)
+      if ($candidate.incomplete) { return [pscustomobject]@{ code=$candidate.code; tested=$false; incomplete=$true; errors=@(); history=@($history); quickFixes=@($quick); note=$candidate.note; validationIssues=$validationIssues } }
+      $code = (Repair-DartCode $candidate.code $rel (Get-ProjectModel $s)).code
+      continue
+    }
     $result = & $Analyzer $s @{ $rel = $code }
-    if (!$result.tested) { return [pscustomobject]@{ code=$code; tested=$false; errors=@(); history=@($history); quickFixes=@($quick); note=$result.summary } }
+    if (!$result.tested) { return [pscustomobject]@{ code=$code; tested=$false; errors=@(); history=@($history); quickFixes=@($quick); note=$result.summary; validationIssues=@(Get-ValidationStructureIssues $s $rel $code) } }
     $errors = @($result.issues | Where-Object { $_.severity -eq 'error' -and $_.file -eq $rel })
     $history.Add($errors.Count)
     if (!$errors.Count) { break }
@@ -934,9 +989,12 @@ function Repair-WithAnalyzer($s, [string]$rel, [string]$code, [int]$Rounds = 2,
       $src = if ($_.line -ge 1 -and $_.line -le $codeLines.Count) { $codeLines[$_.line - 1].Trim() } else { '' }
       "- Dòng $($_.line): $src`n  Lỗi: $($_.message)$(if ($script:FixHints[$_.code]) { "`n  Gợi ý: " + $script:FixHints[$_.code] })"
     }) -join "`n"
+    $evidence = Get-UndefinedNameEvidence $code $errors (Get-ProjectModel $s)
     $prompt = (Get-Prompt $s "Sửa lỗi biên dịch trong file $rel." $rel) +
-      "`nFILE HIỆN TẠI ($rel):`n$code`n`nCÁC DÒNG ĐANG LỖI BIÊN DỊCH (dart analyze). Phải sửa hết các dòng này; giữ nguyên phần còn lại:`n$list`nChỉ trả về TOÀN BỘ nội dung file đã sửa, không giải thích, không Markdown."
-    $code = (Repair-DartCode (Remove-CodeFence (& $Model $prompt)) $rel (Get-ProjectModel $s)).code
+      "`nFILE HIỆN TẠI ($rel):`n$code`n`nCÁC DÒNG ĐANG LỖI BIÊN DỊCH (dart analyze). Phải sửa hết các dòng này; giữ nguyên phần còn lại:`n$list`n$evidence`nChỉ trả về TOÀN BỘ nội dung file đã sửa, không giải thích, không Markdown."
+    $candidate = Get-DartCodeCandidate (& $Model $prompt)
+    if ($candidate.incomplete) { return [pscustomobject]@{ code=$candidate.code; tested=$false; incomplete=$true; errors=$errors; history=@($history); quickFixes=@($quick); note=$candidate.note; validationIssues=$validationIssues } }
+    $code = (Repair-DartCode $candidate.code $rel (Get-ProjectModel $s)).code
   }
-  return [pscustomobject]@{ code=$code; tested=$true; errors=$errors; history=@($history); quickFixes=@($quick); note='' }
+  return [pscustomobject]@{ code=$code; tested=$true; incomplete=$false; errors=$errors; history=@($history); quickFixes=@($quick); note=''; validationIssues=@(Get-ValidationStructureIssues $s $rel $code) }
 }

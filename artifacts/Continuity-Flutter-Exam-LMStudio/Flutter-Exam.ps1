@@ -99,6 +99,7 @@ while ($true) {
     }
     if ($cmd -eq '/file') {
       if (!$session.exam) { throw 'Đưa đề vào bằng /pdf hoặc /exam trước khi sinh file.' }
+      $incompleteNote = ''
       $rel = (Read-Host 'Đường dẫn trong project, ví dụ lib/screens/login_screen.dart').Trim().Replace('\','/')
       if (!(Test-SafeDraftPath $rel)) { throw 'Chỉ nhận lib/**.dart, test/**.dart hoặc assets/**.json.' }
       $project = Get-ProjectModel $session
@@ -124,14 +125,17 @@ while ($true) {
         $request = Read-Host 'File này cần làm gì?'
         $prompt = Get-Prompt $session "Chỉ viết toàn bộ nội dung file $rel bằng Dart/Flutter, không giải thích, không Markdown. $request" $rel
         $timer = [Diagnostics.Stopwatch]::StartNew()
-        $repaired = Repair-DartCode (Remove-CodeFence (Invoke-LmChat $script:SystemPrompt $prompt 3000)) $rel $project
+        $candidate = Get-DartCodeCandidate (Invoke-LmCode $script:SystemPrompt $prompt 3000)
+        $incompleteNote = $candidate.note
+        $repaired = if ($candidate.incomplete) { [pscustomobject]@{ code=$candidate.code; fixes=@() } } else { Repair-DartCode $candidate.code $rel $project }
         Write-Host ("Model: {0:n0}s" -f $timer.Elapsed.TotalSeconds)
         $code = $repaired.code
         $repaired.fixes | ForEach-Object { Write-Host "Đã sửa tự động: $_" }
         $fromModel = $true
       }
       $compileNote = ''
-      if ($rel -match '\.dart$' -and (Get-AnalyzePlan $session).canRun) {
+      if ($incompleteNote) { $compileNote = "FILE CHƯA HOÀN CHỈNH: $incompleteNote Chưa đưa vào vòng biên dịch/tự sửa. Bạn vẫn có thể gõ SAVE sau khi xem cảnh báo." }
+      if (!$incompleteNote -and $rel -match '\.dart$' -and ((Get-AnalyzePlan $session).canRun -or @(Get-ValidationStructureIssues $session $rel $code).Count -gt 0)) {
         Write-Host 'Đang kiểm tra biên dịch (dart analyze, offline)...'
         $timer = [Diagnostics.Stopwatch]::StartNew()
         $checked = Repair-WithAnalyzer $session $rel $code -Rounds $(if ($fromModel) { 2 } else { 0 })
@@ -141,8 +145,9 @@ while ($true) {
         $compileNote = if (!$checked.tested) { "Chưa kiểm biên dịch: $($checked.note)" }
           elseif ($checked.errors.Count) { "CÒN $($checked.errors.Count) LỖI BIÊN DỊCH trong file này:`n" + (($checked.errors | Select-Object -First 10 | ForEach-Object { "  dòng $($_.line): $($_.message)" }) -join "`n") }
           else { 'Biên dịch: không có lỗi trong file này (dart analyze).' }
+        if ($checked.validationIssues.Count) { $compileNote += "`nCHƯA ĐẠT YÊU CẦU FORM: $($checked.validationIssues -join ', '). Bạn vẫn có thể SAVE sau khi xem cảnh báo." }
       }
-      $fromModel = $false
+      $fromModel = $false; $incompleteNote = ''
       Write-Host "`nĐỀ XUẤT ${rel}:`n$code`n"
       if ($compileNote) { Write-Host "$compileNote`n" }
       $answer = Read-Host 'Gõ SAVE để lưu bản nháp riêng'
@@ -158,5 +163,5 @@ while ($true) {
       continue
     }
     Write-Host 'Lệnh không hợp lệ. Gõ /help.'
-  } catch { $code = $null; $fromModel = $false; Write-Host "Lỗi: $($_.Exception.Message)" }
+  } catch { $code = $null; $fromModel = $false; $incompleteNote = ''; Write-Host "Lỗi: $($_.Exception.Message)" }
 }

@@ -22,6 +22,8 @@ Kit terminal giúp ôn thi lập trình ứng dụng Flutter: đọc đề bài 
    - `lib/main.dart` khi project chưa có: `MaterialApp` với route cho các màn hình đã có lớp (không dùng AI).
    - File khác: AI viết theo đề, `pubspec.yaml` và các file liên quan; kit tự sửa import sai tên package và thêm `import 'package:flutter/material.dart'` khi thiếu, rồi báo đã sửa gì.
    - Trước khi in ra, kit **biên dịch thử** file `.dart` bằng SDK đi kèm (khoảng 6 giây mỗi lần). Có lỗi thì kit sửa nhanh kiểu IDE trước (bỏ import tới file không có, thêm `!` cho giá trị nullable, bỏ `const` sai), rồi nhờ AI sửa tối đa 2 vòng. Lỗi còn lại được in kèm bản đề xuất để bạn tự quyết.
+   - Khi đề yêu cầu kiểm tra dữ liệu, kit kiểm tra `Form`/`TextFormField`/`validator` và thử sửa thiếu sót trong giới hạn hai vòng. Lỗi tên không tồn tại được đưa lại cho model cùng dòng lỗi và các khai báo thật; kit không tự bịa field.
+   - Nếu model trả file bị cắt do giới hạn token, kit loại bỏ hàng rào Markdown và dòng cảnh báo khỏi nội dung Dart, báo **FILE CHƯA HOÀN CHỈNH** và không coi file đó là đã kiểm biên dịch. Bạn vẫn có thể gõ `SAVE` sau khi xem cảnh báo.
 5. `/check` kiểm tĩnh: package import có trong `pubspec.yaml`, import trỏ tới file có thật, `main()`/`runApp`, `MaterialApp`, đủ màn hình, route đặt tên đã khai báo, `StatefulWidget` có `State`, `setState` đúng chỗ, `Form`/`validator` khi đề yêu cầu kiểm tra dữ liệu, `fromJson`/`toJson` khi đề dùng JSON/API, asset đã khai báo. Mỗi mục ghi `[ĐẠT]`, `[LỖI]`, `[CHƯA KIỂM]` hoặc `[KHÔNG CẦN]`.
 6. `/analyze` phân tích toàn bộ project cộng bản nháp trên **bản sao tạm** rồi xóa bản sao. Kit dùng `dart analyze` của SDK đi kèm với `pub get --offline`; nếu kit không có SDK thì dùng `flutter` trong PATH.
 7. `/ask` hỏi tự do; trả lời luôn bằng tiếng Việt (model lỡ trả lời tiếng Trung thì kit hỏi lại một lần và cảnh báo nếu vẫn sai).
@@ -29,7 +31,7 @@ Kit terminal giúp ôn thi lập trình ứng dụng Flutter: đọc đề bài 
 ## Giới hạn
 
 - `[ĐẠT]` ở `/check` chỉ là kiểm tĩnh. Muốn biết code có biên dịch được không thì xem kết quả biên dịch của `/file` và `/analyze`. "Biên dịch được" vẫn chưa có nghĩa là app chạy đúng đề: AI có thể dùng `TextField` thay vì `Form`, hoặc bỏ sót chức năng.
-- Trên máy chuẩn bị kit, sau vòng tự sửa: 9/10 file AI viết và 3/4 project biên dịch sạch (xem `tests/results/`).
+- Trên máy chuẩn bị kit, phép đo 3 lượt mỗi đề trên cùng fixture cho kết quả trước sửa 10/15 file và 2/6 project biên dịch sạch; sau sửa 13/15 file và 4/6 project. Khoảng mỗi lượt lần lượt là 3/5–4/5 file, 0/2–1/2 project trước sửa và 4/5–5/5 file, 1/2–2/2 project sau sửa. Model 2B dao động; mẫu nhỏ này chưa chứng minh mức cải thiện ổn định. Xem `openspec/changes/flutter-exam-generation-reliability/verification.md` ở repo và báo cáo trong `tests/results/`.
 - Kit không chạy ứng dụng, không mở máy ảo; mục "Chạy ứng dụng" luôn `[CHƯA KIỂM]`.
 - Đọc ảnh scan bằng model 2B có thể sai; chữ viết tay không được hỗ trợ.
 - Bộ công cụ PDF trong `tools/pdf` là Poppler 26.09.0 (GPL), chép từ kit LM Studio; xem `tools/pdf/NOTICE.txt` và `COPYING-GPL-2.0.txt`. Các DLL đi kèm có giấy phép riêng, cần đối chiếu trước khi phát hành lại kit.
