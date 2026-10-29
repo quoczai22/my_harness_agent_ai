@@ -4,6 +4,7 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 . (Join-Path (Split-Path $PSScriptRoot -Parent) 'lib\FlutterExam.ps1')
 . (Join-Path (Split-Path $PSScriptRoot -Parent) 'lib\FieldTrial.ps1')
+. (Join-Path (Split-Path $PSScriptRoot -Parent) 'lib\BundleSetup.ps1')
 Import-LmConfig (Join-Path $script:KitRoot 'config.json')
 
 $fixtures = Join-Path $PSScriptRoot 'fixtures'
@@ -354,6 +355,45 @@ try {
   Assert ($phase.result -eq 42 -and $phase.samples -ge 2 -and $phase.peakTotalMB -gt 0 -and $phase.minFreeMB -gt 0 -and !$phase.error) 'phase measurement samples memory and returns the phase result'
   $failing = Measure-TrialPhase 'fail' { throw 'boom' } 200
   Assert ($failing.error -eq 'boom' -and $null -eq $failing.result) 'phase errors are recorded, not thrown'
+
+  Section 'one-click bundle setup'
+  $fakeApps = Join-Path $tmp 'apps'; New-Item -ItemType Directory -Force -Path (Join-Path $fakeApps 'b') | Out-Null
+  [IO.File]::WriteAllText((Join-Path $fakeApps 'b\LM Studio.exe'), 'x')
+  Assert ((Find-LmStudioExe @((Join-Path $fakeApps 'a\LM Studio.exe'), (Join-Path $fakeApps 'b\LM Studio.exe'))) -eq (Join-Path $fakeApps 'b\LM Studio.exe') -and !(Find-LmStudioExe @((Join-Path $fakeApps 'none.exe')))) 'LM Studio detection picks the first existing install'
+  Assert ((Get-LmStudioInstallerArguments) -join ' ' -eq '/S /currentuser') 'silent per-user installer arguments'
+  $check = [string][char]0x2713
+  $listSelected = "LLM ENGINE   SELECTED   MODEL FORMAT`nllama.cpp-win-x86_64-avx2@2.62.1     $check     GGUF`nllama.cpp-win-x86_64-vulkan-avx2@2.66.0          GGUF"
+  $listNone = "LLM ENGINE   SELECTED   MODEL FORMAT`nllama.cpp-win-x86_64-avx2@2.62.1          GGUF"
+  Assert ((Test-RuntimeListed $listNone) -and !(Test-RuntimeListed 'llama.cpp-win-x86_64-avx2@2.66.0   GGUF')) 'bundled runtime recognised in lms runtime ls'
+  Assert ((Test-GgufEngineSelected $listSelected) -and !(Test-GgufEngineSelected $listNone)) 'selected GGUF engine detected, so an existing choice is not overridden'
+  $settingsPath = Join-Path $tmp 'lmhome\settings.json'
+  New-Item -ItemType Directory -Force -Path (Split-Path $settingsPath -Parent) | Out-Null
+  $original = "{`n  ""downloadsFolder"": ""C:\\Old\\models"",`n  ""language"": ""en"",`n  ""chat"": { ""a"": true }`n}`n"
+  [IO.File]::WriteAllText($settingsPath, $original)
+  $target = Join-Path $tmp 'Bundle With Space\lmstudio\models'
+  $first = Set-ModelsFolderSetting $settingsPath $target
+  $after = [IO.File]::ReadAllText($settingsPath)
+  Assert ($first.changed -and (Test-Path -LiteralPath $first.backup) -and [IO.File]::ReadAllText($first.backup) -eq $original) 'settings backed up before the models folder changes'
+  Assert ((Get-ModelsFolderSetting $settingsPath) -eq $target -and $after.Replace((ConvertTo-JsonString $target), '"C:\\Old\\models"') -eq $original) 'only downloadsFolder changes; the rest of the file keeps its exact text'
+  $second = Set-ModelsFolderSetting $settingsPath ($target + '\')
+  Assert (!$second.changed -and @(Get-ChildItem (Split-Path $settingsPath -Parent) -Filter 'settings.json.bak-*').Count -eq 1) 'second run with the same folder changes nothing and makes no new backup'
+  [IO.File]::WriteAllText($settingsPath, '{ broken')
+  $threw = $false; try { Set-ModelsFolderSetting $settingsPath $target | Out-Null } catch { $threw = $true }
+  Assert ($threw -and [IO.File]::ReadAllText($settingsPath) -eq '{ broken') 'unreadable settings are left untouched'
+  $missing = Join-Path $tmp 'lmhome2\settings.json'
+  $created = Set-ModelsFolderSetting $missing $target
+  Assert ($created.changed -and (Get-ModelsFolderSetting $missing) -eq $target) 'settings created when LM Studio has none yet'
+  $bundle = Join-Path $tmp 'bundle'; New-Item -ItemType Directory -Force -Path (Join-Path $bundle 'lmstudio'), (Join-Path $bundle 'kit\sdk\a') | Out-Null
+  [IO.File]::WriteAllText((Join-Path $bundle 'lmstudio\model.gguf'), 'MODEL-1'); [IO.File]::WriteAllText((Join-Path $bundle 'kit\sdk\a\x.dart'), 'sdk')
+  $mf = [ordered]@{ files=@([ordered]@{ path='lmstudio/model.gguf'; bytes=7; sha256=(Get-FileHash (Join-Path $bundle 'lmstudio\model.gguf')).Hash.ToLowerInvariant() }); trees=@([ordered]@{ path='kit/sdk'; files=1; bytes=3 }) }
+  [IO.File]::WriteAllText((Join-Path $bundle 'bundle-manifest.json'), (ConvertTo-Json $mf -Depth 5))
+  Assert ((Test-BundleManifest $bundle -Full).ok -and (Test-BundleManifest $bundle).ok) 'intact bundle passes fast and full checks'
+  [IO.File]::WriteAllText((Join-Path $bundle 'lmstudio\model.gguf'), 'MODEL-2')
+  Assert ((Test-BundleManifest $bundle).ok -and !(Test-BundleManifest $bundle -Full).ok) 'same-size tampering is caught only by the full hash check'
+  [IO.File]::WriteAllText((Join-Path $bundle 'kit\sdk\a\y.dart'), 'extra')
+  Assert (((Test-BundleManifest $bundle).problems -join ';') -match 'kit/sdk') 'changed SDK tree is reported'
+  Remove-Item (Join-Path $bundle 'lmstudio\model.gguf')
+  Assert (((Test-BundleManifest $bundle).problems -join ';') -match 'thiếu lmstudio/model.gguf') 'missing bundle file is reported'
 
   Section 'language'
   $cjk = -join @([char]0x4F60, [char]0x597D)

@@ -94,6 +94,11 @@
                       "sha256":  "369d7e211569ca9ad17846afbb24279f747837fecec055a326d8d60f52b60281"
                   },
                   {
+                      "path":  "Build-Exam-Bundle.ps1",
+                      "bytes":  4953,
+                      "sha256":  "212baa31f9a42cbe0d6d6383d3b6da9e34e393da504e4035f03000abce2db4bd"
+                  },
+                  {
                       "path":  "config.json",
                       "bytes":  91,
                       "sha256":  "62515f5cd78b3fbd1829b8f78c05fd2770babb6f9e4a9ef272c91de300321ff9"
@@ -107,6 +112,11 @@
                       "path":  "Flutter-Exam.ps1",
                       "bytes":  11417,
                       "sha256":  "ce68634211b28f9fa58917c99b1951ebb340942467906050087c8c38ae74273b"
+                  },
+                  {
+                      "path":  "lib/BundleSetup.ps1",
+                      "bytes":  5724,
+                      "sha256":  "2c1dcad5e81eb18c90aec1ea7d72f8f2bc6052edc3951efa32e0cecbd323c94e"
                   },
                   {
                       "path":  "lib/FieldTrial.ps1",
@@ -125,8 +135,8 @@
                   },
                   {
                       "path":  "README.md",
-                      "bytes":  7025,
-                      "sha256":  "b074b8ccd9249af1086317c293bd324233146a8bf26cd47e8bde42da4ba8e20a"
+                      "bytes":  7765,
+                      "sha256":  "0d418684d82012c4cad65c46b83350360184467312a503b3d51ea261011c873e"
                   },
                   {
                       "path":  "Run-Field-Trial.cmd",
@@ -244,29 +254,9 @@
                       "sha256":  "1c25e5ef228ebd07857dc6245d6967623825a69323759355f40ae2f0d5c8cf95"
                   },
                   {
-                      "path":  "tests/results/live-20261030-020341.md",
-                      "bytes":  8493,
-                      "sha256":  "5dd7a1b78fc340ddb1e20e1c62dcbb4dddde48d9c2a68432f1ce2267be09dfce"
-                  },
-                  {
-                      "path":  "tests/results/live-20261030-030332.md",
-                      "bytes":  9532,
-                      "sha256":  "2776a4e1bf2423bdce7d029ccd73690fd1f3354f8baab1cd34b1de50e00df4d2"
-                  },
-                  {
-                      "path":  "tests/results/live-20261030-031604.md",
-                      "bytes":  12005,
-                      "sha256":  "d3c98b701bb346d6c7a03708de1569789e1af89c79ff89629cc23cdc5059781f"
-                  },
-                  {
-                      "path":  "tests/results/live-20261030-032729.md",
-                      "bytes":  10950,
-                      "sha256":  "6c0f957d85d1e72cb12b28fff5fe8e53b2e88663994c13dcdd846add0a9d9fb8"
-                  },
-                  {
                       "path":  "tests/Test-FlutterExam.ps1",
-                      "bytes":  48000,
-                      "sha256":  "cff3ddb05d7053af794d772750c0bcad2cbef41586ab3eb4d25364c0a27e9ab3"
+                      "bytes":  52348,
+                      "sha256":  "1389095a41e0b123b2d36160ea9685e0a35c3e121d5acc1d2e1312a1b1c5a242"
                   },
                   {
                       "path":  "tools/pdf/api-ms-win-core-console-l1-1-0.dll",
@@ -992,6 +982,11 @@
                       "path":  "tools/pdf/zstd.dll",
                       "bytes":  657408,
                       "sha256":  "fcc1dc71b7df5489e37a78abab9c31d763570d55e93c67f388058c41c0d7b8df"
+                  },
+                  {
+                      "path":  "Update-Kit-Manifest.ps1",
+                      "bytes":  1402,
+                      "sha256":  "952cf4dd3d4be14ed8292f118e36e5403f77d072010e3f46a1ce5106b7cb3913"
                   }
               ]
 }
