@@ -1,0 +1,23 @@
+@model TraiCay
+@{
+    ViewBag.Title = "Thêm Trái Cây";
+}
+
+<h2>THÊM TRÁI CÁY</h2>
+
+<form asp-action="Create" method="post" class="card p-3">
+    @Html.AntiForgeryToken()
+
+    <label>Tên Trái Cây</label>
+    <input class="form-control mb-2" asp-for="TenTC" required />
+
+    <label>Giá</label>
+    <input class="form-control mb-2" asp-for="Gia" type="number" required />
+
+    <label>Nhà Cung cấp</label>
+    <select class="form-select mb-3" asp-for="MaNCC" asp-items="@ViewBag.NhaCungCapList">
+        <option value="">Chọn Nhà Cung cấp</option>
+    </select>
+
+    <button class="btn btn-success" type="submit">Thêm</button>
+</form>

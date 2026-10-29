@@ -1,0 +1,46 @@
+@model List<TraiCay>
+
+<main>
+    <form method="get">
+        <input type="search" name="keyword" placeholder="Tìm theo tên">
+        <button>Tìm</button>
+    </form>
+    <table>
+        <tr>
+            <th>Tên</th>
+            <th>Giá</th>
+            <th>Nhà cung cấp</th>
+            <th>Thao tác</th>
+        </tr>
+        @foreach (var tc in Model)
+        {
+            <tr>
+                <td>@tc.TenTC</td>
+                <td>@tc.Gia.ToString("C")</td>
+                <td>@tc.TenNhaCungCap</td>
+                <td>
+                    <a href="/TraiCay/Edit?MaTC=@tc.MaTC">Sửa</a> |
+                    <a href="/TraiCay/Delete?MaTC=@tc.MaTC" onclick="return confirm('Xác nhận xóa?')">Xóa</a>
+                </td>
+            </tr>
+        }
+    </table>
+</main>
+
+@using Microsoft.Data.SqlClient;
+
+@inject SqlConnection _conn;
+
+<form method="post">
+    <input type="hidden" name="MaTC" value="0" />
+    <input type="text" name="TenTC" placeholder="Tên cây" />
+    <input type="number" name="Gia" placeholder="Giá" />
+    <input type="date" name="NgayNhap" placeholder="Ngày nhập" />
+    <select name="MaNCC">
+        @foreach (var ncc in await _conn.QueryAsync<NhaCungCap>("SELECT MaNCC, TenNCC FROM NhaCungCap"))
+        {
+            <option value="@ncc.MaNCC">@ncc.TenNCC</option>
+        }
+    </select>
+    <button>Thêm</button>
+</form>

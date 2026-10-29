@@ -1,0 +1,26 @@
+@model Book
+
+<h2>Thêm Sách</h2>
+
+<form asp-action="Create" method="post" class="card p-3">
+    @Html.AntiForgeryToken()
+
+    <label>Tên sách</label>
+    <input class="form-control mb-2" asp-for="Title" required />
+
+    <label>Giá bán</label>
+    <input class="form-control mb-2" asp-for="Price" type="number" required />
+
+    <label>Số lượng tồn</label>
+    <input class="form-control mb-2" asp-for="QuantityOnHand" type="number" required />
+
+    <label>Đăng ký nhà xuất bản</label>
+    <select class="form-select mb-3" asp-for="PublisherId">
+        @foreach (var publisher in ViewBag.Publishers)
+        {
+            <option value="@publisher.PublisherId">@publisher.Name</option>
+        }
+    </select>
+
+    <button class="btn btn-success" type="submit">Thêm</button>
+</form>

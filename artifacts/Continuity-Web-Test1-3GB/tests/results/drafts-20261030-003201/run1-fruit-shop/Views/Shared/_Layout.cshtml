@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@ViewData["Title"]</title>
+    <link rel="stylesheet" href="~/css/style.css">
+    <style>@@media (max-width: 600px) { nav a { display:block } }</style>
+</head>
+<body>
+    <header><h1>Cửa hàng trái cây</h1><nav><a asp-action="Index" class="active">Danh sách</a> <a asp-action="ThemMoi">Thêm mới</a></nav></header>
+    <main class="container">
+        @RenderBody()
+    </main>
+    <footer>Liên hệ: shop@@example.com</footer>
+    @await RenderSectionAsync("Scripts", required: false)
+</body>
+</html>

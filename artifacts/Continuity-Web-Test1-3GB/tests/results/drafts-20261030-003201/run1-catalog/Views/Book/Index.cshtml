@@ -1,0 +1,42 @@
+@model List<Book>
+
+@{
+    ViewData["Title"] = "Danh sách sách";
+}
+
+<h1>Danh sách sách</h1>
+
+<form asp-controller="Book" asp-action="Index" method="get">
+    <div class="form-group">
+        <label for="keyword">Tìm kiếm:</label>
+        <input type="text" class="form-control" id="keyword" name="keyword" value="@ViewBag.Keyword">
+    </div>
+    <button type="submit" class="btn btn-primary">Tìm kiếm</button>
+</form>
+
+<table class="table">
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Tên sách</th>
+            <th>Tên NXB</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var item in Model)
+        {
+            <tr>
+                <td>@item.BookId</td>
+                <td>@item.Title</td>
+                <td>@item.TenPublisher</td>
+                <td>
+                    <a asp-controller="Book" asp-action="Edit" asp-route-id="@item.BookId">Sửa</a> |
+                    <a asp-controller="Book" asp-action="Delete" asp-route-id="@item.BookId">Xóa</a>
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+<a asp-controller="Book" asp-action="Create" class="btn btn-success">Thêm mới</a>

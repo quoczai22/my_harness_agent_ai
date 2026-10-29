@@ -1,0 +1,26 @@
+@model List<TraiCay>
+@{
+    ViewData["Title"] = "Danh sách trái cây";
+}
+<form method="get" asp-action="Index">
+    <input type="search" name="keyword" placeholder="Tìm theo tên" />
+    <button type="submit">Tìm</button>
+</form>
+<a asp-action="Create">Thêm mới</a>
+<table class="table">
+    <tr><th>Tên</th><th>Giá</th><th>Nhà cung cấp</th><th></th></tr>
+    @foreach (var item in Model)
+    {
+        <tr>
+            <td>@item.TenTC</td>
+            <td>@item.Gia.ToString("N0")</td>
+            <td>@item.TenNhaCungCap</td>
+            <td>
+                <a asp-action="Edit" asp-route-id="@item.MaTC">Sửa</a>
+                <form method="post" asp-action="Delete" asp-route-id="@item.MaTC" style="display:inline">
+                    <button type="submit">Xóa</button>
+                </form>
+            </td>
+        </tr>
+    }
+</table>

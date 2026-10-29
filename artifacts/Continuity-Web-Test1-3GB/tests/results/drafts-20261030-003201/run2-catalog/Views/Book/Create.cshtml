@@ -1,0 +1,30 @@
+@model Book
+
+@{
+    ViewBag.Title = "Thêm sách";
+}
+
+<h2>THÊM SÁCH</h2>
+
+<form asp-action="Create" method="post" class="card p-3">
+    @Html.AntiForgeryToken()
+
+    <label>Tên sách</label>
+    <input class="form-control mb-2" asp-for="Title" required />
+
+    <label>Giá bán</label>
+    <input class="form-control mb-2" asp-for="Price" type="number" required />
+
+    <label>Số lượng tồn</label>
+    <input class="form-control mb-2" asp-for="Quantity" type="number" required />
+
+    <label>Thể loại</label>
+    <select class="form-select mb-3" asp-for="GenreId">
+        @foreach (var genre in ViewBag.Genres)
+        {
+            <option value="@genre.GenreId">@genre.Name</option>
+        }
+    </select>
+
+    <button class="btn btn-success" type="submit">Thêm</button>
+</form>

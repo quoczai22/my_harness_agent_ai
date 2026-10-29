@@ -1,0 +1,1 @@
+CREATE TABLE Lop (MaLop int IDENTITY(1,1) PRIMARY KEY, TenLop nvarchar(100) NOT NULL);

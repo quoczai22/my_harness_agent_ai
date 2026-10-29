@@ -1,0 +1,35 @@
+@model List<TraiCay>
+
+<main>
+    <form method="get">
+        <input type="search" name="keyword" placeholder="Tìm theo tên" />
+        <button>Tìm</button>
+    </form>
+    <table>
+        <thead>
+            <tr>
+                <th>Tên</th>
+                <th>Giá</th>
+                <th>Nhà cung cấp</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var tc in Model)
+            {
+                <tr>
+                    <td>@tc.TenTC</td>
+                    <td>@tc.Gia.ToString("#,0.00")</td>
+                    <td>@tc.TenNhaCungCap</td>
+                    <td>
+                        <a href="ThemMoi?MaTC=@tc.MaTC">Thêm mới</a> |
+                        <form method="post" action="XoaTraiCay">
+                            <input type="hidden" name="MaTC" value="@tc.MaTC" />
+                            <button>Xóa</button>
+                        </form>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</main>

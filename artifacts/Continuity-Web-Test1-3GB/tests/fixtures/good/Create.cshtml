@@ -1,0 +1,11 @@
+@model TraiCay
+@{
+    ViewData["Title"] = "Thêm trái cây";
+}
+<form method="post" asp-action="Create">
+    <input asp-for="TenTC" />
+    <input asp-for="Gia" />
+    <input asp-for="NgayNhap" type="date" />
+    <select asp-for="MaNCC" asp-items="ViewBag.MaNCC"></select>
+    <button type="submit">Lưu</button>
+</form>
