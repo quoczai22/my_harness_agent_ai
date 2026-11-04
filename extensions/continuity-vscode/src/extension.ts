@@ -102,8 +102,10 @@ async function requestOllamaSummary(state: ContinuityState | undefined, secrets:
 }
 
 export async function activate(context: vscode.ExtensionContext) {
-  const autoStartOllama = vscode.workspace.getConfiguration("continuity").get<boolean>("ollamaAutoStart", true);
-  if (autoStartOllama) {
+  const startupConfig = vscode.workspace.getConfiguration("continuity");
+  const usesOllama = startupConfig.get<string>("offlineAssistantProvider", "ollama") === "ollama"
+    || startupConfig.get<string>("summaryProvider", "ollama") === "ollama";
+  if (usesOllama && startupConfig.get<boolean>("ollamaAutoStart", true)) {
     void ensureLocalOllamaService({ autoStart: true }).catch(error => console.warn("Continuity could not auto-start local Ollama:", error));
   }
   let cachedState = await readWorkspaceState(activeFolder());
@@ -118,6 +120,16 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(vscode.commands.registerCommand("continuity.summarizeWithOllama", async () => {
     try { const summary = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Asking local Ollama" }, () => requestOllamaSummary(cachedState, context.secrets)); vscode.window.showInformationMessage(summary); }
     catch (error) { vscode.window.showErrorMessage(error instanceof Error ? error.message : "Local Ollama is unavailable."); }
+  }));
+  context.subscriptions.push(vscode.commands.registerCommand("continuity.setOpenAIKey", async () => {
+    const key = await vscode.window.showInputBox({ title: "OpenAI API key", prompt: "Stored only in VS Code SecretStorage.", password: true, ignoreFocusOut: true });
+    if (!key?.trim()) return;
+    await context.secrets.store(OPENAI_KEY_SECRET, key.trim());
+    vscode.window.showInformationMessage("OpenAI API key saved.");
+  }));
+  context.subscriptions.push(vscode.commands.registerCommand("continuity.clearOpenAIKey", async () => {
+    await context.secrets.delete(OPENAI_KEY_SECRET);
+    vscode.window.showInformationMessage("OpenAI API key cleared.");
   }));
 
   // Offline Code Assistant Initialization
