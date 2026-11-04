@@ -14,7 +14,7 @@ export const IMAGE_MAX_BYTES = 2_000_000;
 /** A page with less text than this has no usable text layer (usually a scan or photo). */
 const MIN_PAGE_CHARS = 40;
 
-export interface PdfText { text: string; pages: number; totalPages: number; scannedPages: number[]; engine: "pdfjs" | "pdftotext"; }
+export interface PdfText { text: string; pageTexts: string[]; pages: number; totalPages: number; scannedPages: number[]; engine: "pdfjs" | "pdftotext"; }
 export interface PdfExtractOptions {
   maxPages?: number;
   maxChars?: number;
@@ -82,7 +82,7 @@ function summarize(pageTexts: string[], totalPages: number, engine: PdfText["eng
   const scannedPages = pageTexts.map((t, i) => (t.replace(/\s/g, "").length < MIN_PAGE_CHARS ? i + 1 : 0)).filter(Boolean);
   let text = pageTexts.map((t, i) => (scannedPages.includes(i + 1) ? "" : t)).filter(Boolean).join("\n\n");
   if (text.length > maxChars) text = text.slice(0, maxChars) + `\n[Truncated to the first ${maxChars} characters.]`;
-  return { text, pages: pageTexts.length, totalPages, scannedPages, engine };
+  return { text, pageTexts, pages: pageTexts.length, totalPages, scannedPages, engine };
 }
 
 /** Reads a PDF's text layer locally: bundled pdf.js first, pdftotext as a fallback. Never touches the network. */
@@ -106,7 +106,7 @@ export async function extractPdfText(file: string, options: PdfExtractOptions = 
   throw new Error(`Không đọc được PDF này (file hỏng, có mật khẩu hoặc không phải PDF). / Could not read this PDF: ${reason}`);
 }
 
-export interface FileAttachment { text: string; imageDataUrl?: string; }
+export interface FileAttachment { text: string; imageDataUrl?: string; scannedPdf?: { file: string; pageTexts: string[]; scannedPages: number[] }; }
 
 /** Builds the prompt part for one explicitly chosen PDF or image file. */
 export async function readAttachmentFile(file: string, question: string, options: PdfExtractOptions = {}): Promise<FileAttachment> {
@@ -124,7 +124,10 @@ export async function readAttachmentFile(file: string, question: string, options
   const scanNote = pdf.scannedPages.length
     ? `Trang ${pdf.scannedPages.join(", ")} không có chữ (ảnh scan); hãy gửi các trang đó dạng ảnh. / Pages ${pdf.scannedPages.join(", ")} have no text layer; send them as images.`
     : "";
-  if (!pdf.text) throw new Error(scanNote || "PDF không có chữ. / The PDF contains no text.");
+  if (!pdf.text && !pdf.scannedPages.length) throw new Error("PDF không có chữ. / The PDF contains no text.");
   const pageNote = pdf.totalPages > pdf.pages ? ` (first ${pdf.pages} of ${pdf.totalPages} pages)` : "";
-  return { text: `${question || "Explain the relevant contents of this PDF."}\nExtracted text from ${name}${pageNote}:\n${pdf.text}${scanNote ? `\n[${scanNote}]` : ""}` };
+  return {
+    text: `${question || "Explain the relevant contents of this PDF."}\nExtracted text from ${name}${pageNote}:\n${pdf.text}${scanNote ? `\n[${scanNote}]` : ""}`,
+    scannedPdf: pdf.scannedPages.length ? { file, pageTexts: pdf.pageTexts, scannedPages: pdf.scannedPages } : undefined
+  };
 }

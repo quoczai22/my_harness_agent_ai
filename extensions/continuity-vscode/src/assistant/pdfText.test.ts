@@ -22,7 +22,9 @@ test("an image-only PDF is reported as scanned pages, never as invented text", a
   const pdf = await extractPdfText(fixture("scanned.pdf"), noPdftotext);
   assert.deepEqual(pdf.scannedPages, [1]);
   assert.equal(pdf.text, "");
-  await assert.rejects(() => readAttachmentFile(fixture("scanned.pdf"), "Làm câu 1", noPdftotext), /Trang 1 không có chữ/);
+  const attachment = await readAttachmentFile(fixture("scanned.pdf"), "Làm câu 1", noPdftotext);
+  assert.deepEqual(attachment.scannedPdf?.scannedPages, [1]);
+  assert.equal(attachment.scannedPdf?.pageTexts.length, 1);
 });
 
 test("a corrupt PDF gives a clear error when no fallback is available", async () => {

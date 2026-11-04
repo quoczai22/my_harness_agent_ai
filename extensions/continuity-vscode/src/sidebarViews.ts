@@ -4,6 +4,7 @@ import { basename } from "node:path";
 import { AssistantStore, ChatSession } from "./assistantStore";
 import { renderNonceProtectedHtml, renderSafeMarkdown } from "./chatResponse";
 import type { ProposalCheckResult } from "./assistant/proposalCheck";
+import type { RenderedScanPage } from "./assistant/scanPdfVision";
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, c => ({
@@ -38,14 +39,14 @@ function promptPreview(value: string, maxLength = 160): string {
 /**
  * Common secure HTML wrapper with strict Content Security Policy.
  */
-export function wrapWebviewHtml(title: string, bodyContent: string): string {
+export function wrapWebviewHtml(title: string, bodyContent: string, vendorCspSource?: string): string {
   const nonce = randomUUID();
-  const safeBody = bodyContent.replace(/<script>/g, `<script nonce="${nonce}">`);
+  const safeBody = bodyContent.replace(/<script>/g, `<script nonce="${nonce}">`).replace(/<script type="module">/g, `<script type="module" nonce="${nonce}">`);
   const page = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'${vendorCspSource ? ` ${vendorCspSource}` : ""}; ${vendorCspSource ? `worker-src ${vendorCspSource} blob:; connect-src ${vendorCspSource}; img-src data:;` : ""}">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(title)}</title>
   <style>
@@ -247,18 +248,60 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   /** File chosen with the Attach button; sent with the next prompt, then cleared. */
   private attachment?: string;
+  private scanAssets?: { moduleUri: string; workerUri: string; cmapUri: string; cspSource: string };
+  private pendingRenders = new Map<string, { page: number; resolve: (image: RenderedScanPage) => void; reject: (error: Error) => void }>();
+  private pendingReview?: { id: string; draft: string; resolve: (text: string | undefined) => void };
 
   constructor(
     private readonly store: AssistantStore,
     private readonly onSendPrompt: (prompt: string, selectionOnly: boolean, attachmentPath?: string) => Promise<void>,
     // Injected so this module keeps no runtime dependency on the vscode API (its tests run in plain Node).
     private readonly pickAttachment: () => Promise<string | undefined> = async () => undefined,
-    private readonly currentModel: () => LocalModelLabel = () => ({ provider: "ollama", model: "" })
+    private readonly currentModel: () => LocalModelLabel = () => ({ provider: "ollama", model: "" }),
+    private readonly getScanAssets?: (webview: vscode.Webview) => { vendorRoot: vscode.Uri; moduleUri: string; workerUri: string; cmapUri: string; cspSource: string }
   ) {}
+
+  async renderPdfPage(bytes: Uint8Array, page: number, signal: AbortSignal): Promise<RenderedScanPage> {
+    if (!this._view || !this.scanAssets) throw new Error("Mở khung chat để vẽ trang PDF.");
+    const id = randomUUID();
+    return new Promise<RenderedScanPage>((resolve, reject) => {
+      const abort = () => {
+        this._view?.webview.postMessage({ command: "cancelPdfRender", id });
+        this.pendingRenders.delete(id);
+        reject(new Error("Đã hủy vẽ trang PDF."));
+      };
+      if (signal.aborted) { abort(); return; }
+      this.pendingRenders.set(id, { page, resolve: image => { signal.removeEventListener("abort", abort); resolve(image); }, reject: error => { signal.removeEventListener("abort", abort); reject(error); } });
+      signal.addEventListener("abort", abort, { once: true });
+      void this._view!.webview.postMessage({ command: "renderPdfPage", id, page, pdfBase64: Buffer.from(bytes).toString("base64") }).then(sent => {
+        if (!sent) { this.pendingRenders.delete(id); signal.removeEventListener("abort", abort); reject(new Error("Không gửi được trang PDF tới webview.")); }
+      });
+    });
+  }
+
+  reviewScanTranscript(draft: string, signal?: AbortSignal): Promise<string | undefined> {
+    if (!this._view) return Promise.reject(new Error("Mở khung chat để xác nhận bản chép PDF."));
+    if (this.pendingReview) return Promise.reject(new Error("Một bản chép khác đang chờ xác nhận."));
+    return new Promise(resolve => {
+      const finish = (text: string | undefined) => { signal?.removeEventListener("abort", abort); resolve(text); };
+      const abort = () => {
+        if (!this.pendingReview) return;
+        this.pendingReview = undefined;
+        this.refresh();
+        finish(undefined);
+      };
+      if (signal?.aborted) { resolve(undefined); return; }
+      signal?.addEventListener("abort", abort, { once: true });
+      this.pendingReview = { id: randomUUID(), draft, resolve: finish };
+      this.refresh();
+    });
+  }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this._view = webviewView;
-    webviewView.webview.options = { enableScripts: true };
+    const assets = this.getScanAssets?.(webviewView.webview);
+    this.scanAssets = assets;
+    webviewView.webview.options = { enableScripts: true, ...(assets ? { localResourceRoots: [assets.vendorRoot] } : {}) };
     this.refresh();
 
     webviewView.webview.onDidReceiveMessage(async message => {
@@ -272,6 +315,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const attachment = this.attachment;
         this.attachment = undefined;
         await this.onSendPrompt(message.text, message.selectionOnly, attachment);
+        this.refresh();
+      } else if (message.command === "renderedPdfPage" || message.command === "pdfRenderError") {
+        const pending = this.pendingRenders.get(message.id);
+        if (!pending) return;
+        this.pendingRenders.delete(message.id);
+        if (message.command === "pdfRenderError") pending.reject(new Error(String(message.error).slice(0, 300)));
+        else if (message.page !== pending.page) pending.reject(new Error("Webview trả ảnh sai số trang PDF."));
+        else pending.resolve({ dataUrl: message.dataUrl, width: message.width, height: message.height });
+      } else if (message.command === "confirmScanReview" || message.command === "cancelScanReview") {
+        if (!this.pendingReview || message.id !== this.pendingReview.id) return;
+        const pending = this.pendingReview;
+        this.pendingReview = undefined;
+        pending.resolve(message.command === "confirmScanReview" ? String(message.text) : undefined);
         this.refresh();
       }
     });
@@ -319,6 +375,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         </div>
       </div>
       ${this.attachment ? `<div class="attachment-chip">Attached: ${escapeHtml(basename(this.attachment))} <button id="btnRemoveAttachment" class="secondary-btn" type="button" aria-label="Remove attachment">Remove</button></div>` : ""}
+      ${this.pendingReview ? `<div class="scan-review"><h3>Kiểm tra bản chép PDF</h3><textarea id="scanReviewText" rows="12" maxlength="40000">${escapeHtml(this.pendingReview.draft)}</textarea><div><button id="btnConfirmScan">Xác nhận</button><button id="btnCancelScan" class="secondary-btn">Hủy</button></div></div>` : ""}
       <textarea id="promptInput" rows="3" placeholder="Ask ${escapeHtml(modelLabel)}, attach a PDF/image, or review selection..."></textarea>
       <div>
         <button id="btnSend">Send File/Prompt</button>
@@ -327,6 +384,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       </div>
       <script>
         const vscode = acquireVsCodeApi();
+        window.continuityVscodeBridge = vscode;
         const messages = document.getElementById('messages');
         const latestMessageId = ${JSON.stringify(latestMessageId)};
         const priorState = vscode.getState() || {};
@@ -364,11 +422,61 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         document.getElementById('btnSend')?.addEventListener('click', () => send(false));
         document.getElementById('btnAttach')?.addEventListener('click', () => vscode.postMessage({ command: 'attach' }));
         document.getElementById('btnRemoveAttachment')?.addEventListener('click', () => vscode.postMessage({ command: 'removeAttachment' }));
+        document.getElementById('btnConfirmScan')?.addEventListener('click', () => vscode.postMessage({ command: 'confirmScanReview', id: ${JSON.stringify(this.pendingReview?.id ?? "")}, text: document.getElementById('scanReviewText')?.value || '' }));
+        document.getElementById('btnCancelScan')?.addEventListener('click', () => vscode.postMessage({ command: 'cancelScanReview', id: ${JSON.stringify(this.pendingReview?.id ?? "")} }));
         document.getElementById('btnReviewSelection')?.addEventListener('click', () => send(true));
       </script>
+      ${this.scanAssets ? `<script type="module">
+        const vscodeBridge = window.continuityVscodeBridge;
+        const moduleUri = ${JSON.stringify(this.scanAssets.moduleUri)};
+        const workerUri = ${JSON.stringify(this.scanAssets.workerUri)};
+        const cmapUri = ${JSON.stringify(this.scanAssets.cmapUri)};
+        const activeRenders = new Map();
+        window.addEventListener('message', async event => {
+          const request = event.data;
+          if (request?.command === 'cancelPdfRender') {
+            const active = activeRenders.get(request.id);
+            if (active) { active.cancelled = true; try { active.task?.cancel(); } catch {} }
+            return;
+          }
+          if (request?.command !== 'renderPdfPage') return;
+          const active = { cancelled: false, task: undefined };
+          activeRenders.set(request.id, active);
+          let documentTask, documentHandle, pageHandle;
+          try {
+            const pdfjs = await import(moduleUri);
+            pdfjs.GlobalWorkerOptions.workerSrc = workerUri;
+            const binary = atob(request.pdfBase64);
+            const pdfBytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+            documentTask = pdfjs.getDocument({ data: pdfBytes, cMapUrl: cmapUri, cMapPacked: true, isEvalSupported: false });
+            documentHandle = await documentTask.promise;
+            if (active.cancelled) return;
+            pageHandle = await documentHandle.getPage(request.page);
+            const initial = pageHandle.getViewport({ scale: 1 });
+            const scale = Math.min(4, 1599 / Math.max(initial.width, initial.height));
+            const viewport = pageHandle.getViewport({ scale });
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.floor(viewport.width));
+            canvas.height = Math.max(1, Math.floor(viewport.height));
+            active.task = pageHandle.render({ canvasContext: canvas.getContext('2d'), viewport });
+            await active.task.promise;
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.80);
+            if ((dataUrl.length - 'data:image/jpeg;base64,'.length) * 3 / 4 > 2000000) throw new Error('Ảnh trang scan vượt giới hạn 2 MB.');
+            if (!active.cancelled) vscodeBridge.postMessage({ command: 'renderedPdfPage', id: request.id, page: request.page, width: canvas.width, height: canvas.height, dataUrl });
+            canvas.width = canvas.height = 0;
+          } catch (error) {
+            if (!active.cancelled) vscodeBridge.postMessage({ command: 'pdfRenderError', id: request.id, error: String(error) });
+          } finally {
+            activeRenders.delete(request.id);
+            try { pageHandle?.cleanup(); } catch {}
+            try { await documentHandle?.destroy(); } catch {}
+            try { await documentTask?.destroy(); } catch {}
+          }
+        });
+      </script>` : ""}
     `;
 
-    this._view.webview.html = wrapWebviewHtml("Offline Code Assistant Chat", html);
+    this._view.webview.html = wrapWebviewHtml("Offline Code Assistant Chat", html, this.scanAssets?.cspSource);
   }
 }
 

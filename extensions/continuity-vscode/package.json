@@ -2,7 +2,7 @@
   "name": "continuity-vscode",
   "displayName": "Continuity Workflow",
   "description": "Offline, read-only Continuity workflow views with an explicit local Ollama helper and Offline Code Assistant.",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "private": true,
   "publisher": "quoczai22",
   "license": "MIT",

@@ -1,9 +1,9 @@
 import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import * as vscode from "vscode";
-import { readAttachmentFile } from "./pdfText";
+import { readAttachmentFile, type FileAttachment } from "./pdfText";
 
-export interface LocalAttachment { text: string; imageDataUrl?: string; }
+export interface LocalAttachment extends FileAttachment {}
 
 async function safeAttachmentFile(uri: vscode.Uri, folder: vscode.WorkspaceFolder): Promise<boolean> {
   if (uri.scheme !== "file" || folder.uri.scheme !== "file") return false;

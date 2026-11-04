@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 import { realpath } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { ContinuityState, createOllamaSummaryPayload, extractTimeline, readWorkspaceState } from "./state";
 import { requestOllama, requestOpenAI } from "./providers";
 import { AssistantStore, parsePortableSessions } from "./assistantStore";
@@ -20,6 +21,8 @@ import { runTrustedAgentProposal } from "./assistant/naturalProposal";
 import { readChosenAttachment, readLocalAttachment } from "./assistant/localAttachments";
 import { runLocalReadLoop } from "./assistant/agentLoop";
 import { checkProposalLoop, commandHash } from "./assistant/proposalCheck";
+import { runScannedPdfReview } from "./assistant/scanPdfVision";
+import { checkSelectedVlm, transcribeScanWithLmStudio } from "./assistant/scanLmStudio";
 import { chooseLocalModel, ensureLmStudioModelLoaded, ensureLmStudioServer, listLmStudioModels, listOllamaModels, persistLocalModelChoice, type LocalProvider, type PickedModel } from "./assistant/localModelPicker";
 
 const OPENAI_KEY_SECRET = "continuity.openaiApiKey";
@@ -297,14 +300,35 @@ export async function activate(context: vscode.ExtensionContext) {
       const transcript = assistantStore.getBoundedConversation(currentSession.id);
       const historyBlock = transcript ? `\n\nActive session transcript (user and assistant messages only):\n${transcript}` : "";
       const attachedNote = attachmentPath ? `\n\n[Attached: ${basename(attachmentPath)}]` : "";
-      await assistantStore.addMessage(currentSession.id, { sender: "user", text: `${prompt}${attachedNote}${safe ? `\n\n[Safe ${safe.label} context attached]` : ""}` });
-      sessionsProvider?.refresh();
       const relativePath = safe ? vscode.workspace.asRelativePath(safe.uri, false).replace(/\\/g, "/") : undefined;
       const folder = activeFolder();
       const pdfTextExecutable = vscode.workspace.getConfiguration("continuity").get<string>("pdfTextExecutable", "");
-      const attachment = attachmentPath
+      let attachment = attachmentPath
         ? await readChosenAttachment(attachmentPath, prompt, pdfTextExecutable)
         : await readLocalAttachment(prompt, folder, pdfTextExecutable);
+      if (attachment.scannedPdf) {
+        const scanned = attachment.scannedPdf;
+        const selected = currentLocalModel();
+        const endpoint = vscode.workspace.getConfiguration("continuity").get<string>("lmStudioEndpoint", "http://127.0.0.1:1234");
+        const bytes = new Uint8Array(await readFile(scanned.file));
+        const controller = new AbortController();
+        const confirmed = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Đọc và xác nhận trang PDF scan", cancellable: true }, async (_progress, token) => {
+          token.onCancellationRequested(() => controller.abort());
+          return runScannedPdfReview({
+            pageTexts: scanned.pageTexts, scannedPages: scanned.scannedPages,
+            provider: selected.provider, model: selected.model,
+            checkModel: (model, signal) => checkSelectedVlm(endpoint, model, signal),
+            render: (page, signal) => chatProvider.renderPdfPage(bytes, page, signal),
+            transcribe: (_page, image, signal) => transcribeScanWithLmStudio(endpoint, selected.model, image, signal),
+            review: draft => chatProvider.reviewScanTranscript(draft, controller.signal),
+            signal: controller.signal
+          });
+        });
+        if (confirmed === undefined) return;
+        attachment = { text: `${prompt || "Đọc đề PDF này."}\nNội dung PDF đã được xác nhận:\n${confirmed}` };
+      }
+      await assistantStore.addMessage(currentSession.id, { sender: "user", text: `${prompt}${attachedNote}${safe ? `\n\n[Safe ${safe.label} context attached]` : ""}` });
+      sessionsProvider?.refresh();
       const index = vscode.workspace.getConfiguration("continuity").get<boolean>("workspaceIndex.enabled", false) ? workspaceIndexManager.getIndex() : null;
       const candidates = folder && isIndexForWorkspace(index, folder.uri.fsPath)
         ? findRelevantFiles(`${attachment.text}\n${safe?.text.slice(0, 2000) ?? ""}`, index.files).filter(item => item.relativePath !== relativePath)
@@ -374,7 +398,16 @@ export async function activate(context: vscode.ExtensionContext) {
       filters: { "PDF or image": ["pdf", "png", "jpg", "jpeg", "webp"] }
     });
     return picked?.[0]?.fsPath;
-  }, currentLocalModel);
+  }, currentLocalModel, webview => {
+    const vendorRoot = vscode.Uri.file(join(context.extensionPath, "dist", "vendor", "pdfjs"));
+    return {
+      vendorRoot,
+      moduleUri: webview.asWebviewUri(vscode.Uri.joinPath(vendorRoot, "pdf.min.mjs")).toString(),
+      workerUri: webview.asWebviewUri(vscode.Uri.joinPath(vendorRoot, "pdf.worker.min.mjs")).toString(),
+      cmapUri: webview.asWebviewUri(vscode.Uri.joinPath(vendorRoot, "cmaps")).toString() + "/",
+      cspSource: webview.cspSource
+    };
+  });
 
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
     if (["offlineAssistantProvider", "offlineAssistantModel", "lmStudioModel"].some(key => event.affectsConfiguration(`continuity.${key}`))) {
