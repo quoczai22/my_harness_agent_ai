@@ -18,6 +18,7 @@ import { AutoWriteAuditStore, TrustedAutoWriteGateway } from "./assistant/truste
 import { runTrustedAgentProposal } from "./assistant/naturalProposal";
 import { readChosenAttachment, readLocalAttachment } from "./assistant/localAttachments";
 import { runLocalReadLoop } from "./assistant/agentLoop";
+import { chooseLocalModel, ensureLmStudioModelLoaded, ensureLmStudioServer, listLmStudioModels, listOllamaModels, persistLocalModelChoice, type LocalProvider, type PickedModel } from "./assistant/localModelPicker";
 
 const OPENAI_KEY_SECRET = "continuity.openaiApiKey";
 const OLLAMA_URL = "http://127.0.0.1:11434/api/generate";
@@ -54,6 +55,22 @@ function currentLocalModel(): LocalModelLabel {
       ? config.get<string>("lmStudioModel", "")
       : config.get<string>("offlineAssistantModel", DEFAULT_OLLAMA_MODEL)
   };
+}
+
+function localModelSettingTarget(key: "offlineAssistantProvider" | "offlineAssistantModel" | "lmStudioModel"): vscode.ConfigurationTarget {
+  const detail = vscode.workspace.getConfiguration("continuity").inspect<string>(key);
+  if (detail?.workspaceFolderValue !== undefined) return vscode.ConfigurationTarget.WorkspaceFolder;
+  if (detail?.workspaceValue !== undefined) return vscode.ConfigurationTarget.Workspace;
+  if (detail?.globalValue !== undefined) return vscode.ConfigurationTarget.Global;
+  return vscode.workspace.workspaceFolders?.length ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+}
+
+async function saveLocalModelChoice(choice: PickedModel): Promise<void> {
+  const config = vscode.workspace.getConfiguration("continuity");
+  await persistLocalModelChoice(choice, {
+    read: key => config.get<string>(key, key === "offlineAssistantProvider" ? "ollama" : ""),
+    write: async (key, value) => { await config.update(key, value, localModelSettingTarget(key)); }
+  });
 }
 
 async function localModelResponse(prompt: string, imageDataUrl?: string): Promise<string> {
@@ -148,6 +165,55 @@ export async function activate(context: vscode.ExtensionContext) {
   const assistantStore = new AssistantStore(context.workspaceState);
   const workspaceIndexManager = new WorkspaceIndexManager(context.workspaceState);
   let composerProvider: ComposerViewProvider;
+  const modelStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+  modelStatus.command = "continuity.assistant.selectLocalModel";
+  const refreshModelStatus = () => {
+    const selected = currentLocalModel();
+    modelStatus.text = `$(server) ${selected.provider === "lmstudio" ? "LM Studio" : "Ollama"}: ${selected.model.trim() || "select model"}`;
+    modelStatus.tooltip = "Select local AI provider and model";
+    modelStatus.show();
+  };
+  refreshModelStatus();
+  context.subscriptions.push(modelStatus);
+  context.subscriptions.push(vscode.commands.registerCommand("continuity.assistant.selectLocalModel", async () => {
+    try {
+      const endpoint = vscode.workspace.getConfiguration("continuity").get<string>("lmStudioEndpoint", "http://127.0.0.1:1234");
+      await chooseLocalModel({
+        pickProvider: async () => {
+          const item = await vscode.window.showQuickPick([
+            { label: "Ollama", provider: "ollama" as LocalProvider },
+            { label: "LM Studio", provider: "lmstudio" as LocalProvider }
+          ], { placeHolder: "Choose a local AI provider" });
+          return item?.provider;
+        },
+        list: async provider => vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Finding ${provider === "lmstudio" ? "LM Studio" : "Ollama"} models` }, async () => {
+          if (provider === "lmstudio") {
+            await ensureLmStudioServer(endpoint);
+            return listLmStudioModels(endpoint);
+          }
+          await ensureLocalOllamaService({ autoStart: vscode.workspace.getConfiguration("continuity").get<boolean>("ollamaAutoStart", true) });
+          return listOllamaModels();
+        }),
+        pickModel: async models => {
+          const item = await vscode.window.showQuickPick(models.map(model => ({
+            label: model.id,
+            description: model.vision ? "Reads images (VLM)" : model.loaded === false ? "Not loaded" : undefined,
+            model
+          })), { placeHolder: "Choose an installed local model" });
+          return item?.model;
+        },
+        prepare: async (provider, model) => {
+          if (provider === "lmstudio") await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Loading LM Studio model ${model.id}` }, () => ensureLmStudioModelLoaded(model, endpoint));
+        },
+        save: saveLocalModelChoice
+      });
+      refreshModelStatus();
+      chatProvider?.refresh();
+    } catch (error) {
+      vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
+      refreshModelStatus();
+    }
+  }));
 
   context.subscriptions.push(vscode.commands.registerCommand("continuity.assistant.exportSessions", async () => {
     try {
@@ -274,7 +340,10 @@ export async function activate(context: vscode.ExtensionContext) {
   }, currentLocalModel);
 
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
-    if (["offlineAssistantProvider", "offlineAssistantModel", "lmStudioModel"].some(key => event.affectsConfiguration(`continuity.${key}`))) chatProvider.refresh();
+    if (["offlineAssistantProvider", "offlineAssistantModel", "lmStudioModel"].some(key => event.affectsConfiguration(`continuity.${key}`))) {
+      chatProvider.refresh();
+      refreshModelStatus();
+    }
   }));
 
   context.subscriptions.push(vscode.window.registerWebviewViewProvider(SessionsViewProvider.viewType, sessionsProvider));
