@@ -407,7 +407,7 @@ export async function activate(context: vscode.ExtensionContext) {
       cmapUri: webview.asWebviewUri(vscode.Uri.joinPath(vendorRoot, "cmaps")).toString() + "/",
       cspSource: webview.cspSource
     };
-  });
+  }, process.env.CONTINUITY_EXTENSION_TEST === "1");
 
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
     if (["offlineAssistantProvider", "offlineAssistantModel", "lmStudioModel"].some(key => event.affectsConfiguration(`continuity.${key}`))) {
@@ -568,6 +568,12 @@ export async function activate(context: vscode.ExtensionContext) {
   }));
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(refresh));
   await refresh();
+  if (process.env.CONTINUITY_EXTENSION_TEST === "1") {
+    return {
+      waitForChatWebview: (timeoutMs?: number) => chatProvider.waitForTestReady(timeoutMs),
+      renderPdfPageForTest: (bytes: Uint8Array, page: number, signal: AbortSignal) => chatProvider.renderPdfPage(bytes, page, signal)
+    };
+  }
 }
 
 export function deactivate() {}

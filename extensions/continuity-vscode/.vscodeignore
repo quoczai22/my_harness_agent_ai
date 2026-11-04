@@ -1,6 +1,7 @@
 .vscode/**
 src/**
 **/*.test.js
+dist/integration/**
 **/*.test.ts
 tsconfig.json
 package-lock.json

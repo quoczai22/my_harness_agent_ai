@@ -251,6 +251,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private scanAssets?: { moduleUri: string; workerUri: string; cmapUri: string; cspSource: string };
   private pendingRenders = new Map<string, { page: number; resolve: (image: RenderedScanPage) => void; reject: (error: Error) => void }>();
   private pendingReview?: { id: string; draft: string; resolve: (text: string | undefined) => void };
+  private testViewId = "";
+  private testReady = false;
+  private testReadyWaiters: Array<() => void> = [];
 
   constructor(
     private readonly store: AssistantStore,
@@ -258,8 +261,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Injected so this module keeps no runtime dependency on the vscode API (its tests run in plain Node).
     private readonly pickAttachment: () => Promise<string | undefined> = async () => undefined,
     private readonly currentModel: () => LocalModelLabel = () => ({ provider: "ollama", model: "" }),
-    private readonly getScanAssets?: (webview: vscode.Webview) => { vendorRoot: vscode.Uri; moduleUri: string; workerUri: string; cmapUri: string; cspSource: string }
+    private readonly getScanAssets?: (webview: vscode.Webview) => { vendorRoot: vscode.Uri; moduleUri: string; workerUri: string; cmapUri: string; cspSource: string },
+    private readonly testMode = false
   ) {}
+
+  waitForTestReady(timeoutMs = 15_000): Promise<void> {
+    if (!this.testMode) return Promise.reject(new Error("Webview test API is disabled."));
+    if (this.testReady) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const finish = () => { clearTimeout(timer); resolve(); };
+      const timer = setTimeout(() => {
+        this.testReadyWaiters = this.testReadyWaiters.filter(waiter => waiter !== finish);
+        reject(new Error("Chat webview did not become ready."));
+      }, timeoutMs);
+      this.testReadyWaiters.push(finish);
+    });
+  }
 
   async renderPdfPage(bytes: Uint8Array, page: number, signal: AbortSignal): Promise<RenderedScanPage> {
     if (!this._view || !this.scanAssets) throw new Error("Mở khung chat để vẽ trang PDF.");
@@ -316,13 +333,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.attachment = undefined;
         await this.onSendPrompt(message.text, message.selectionOnly, attachment);
         this.refresh();
+      } else if (this.testMode && message.command === "scanTestReady" && message.viewId === this.testViewId) {
+        this.testReady = true;
+        this.testReadyWaiters.splice(0).forEach(resolve => resolve());
+      } else if (this.testMode && message.command === "scanTestTrace") {
+        console.log(`WEBVIEW TRACE: ${String(message.step).slice(0, 300)}`);
       } else if (message.command === "renderedPdfPage" || message.command === "pdfRenderError") {
         const pending = this.pendingRenders.get(message.id);
         if (!pending) return;
         this.pendingRenders.delete(message.id);
         if (message.command === "pdfRenderError") pending.reject(new Error(String(message.error).slice(0, 300)));
         else if (message.page !== pending.page) pending.reject(new Error("Webview trả ảnh sai số trang PDF."));
-        else pending.resolve({ dataUrl: message.dataUrl, width: message.width, height: message.height });
+        else pending.resolve({ dataUrl: message.dataUrl, width: message.width, height: message.height,
+          ...(this.testMode ? { testDiagnostics: message.testDiagnostics } : {}) });
       } else if (message.command === "confirmScanReview" || message.command === "cancelScanReview") {
         if (!this.pendingReview || message.id !== this.pendingReview.id) return;
         const pending = this.pendingReview;
@@ -335,6 +358,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   refresh(): void {
     if (!this._view) return;
+    this.testReady = false;
+    this.testViewId = randomUUID();
     const state = this.store.getState();
     const active = state.sessions.find(s => s.id === state.activeSessionId);
     const profile = state.styleProfile;
@@ -428,10 +453,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       </script>
       ${this.scanAssets ? `<script type="module">
         const vscodeBridge = window.continuityVscodeBridge;
+        const testMode = ${JSON.stringify(this.testMode)};
+        const viewId = ${JSON.stringify(this.testViewId)};
         const moduleUri = ${JSON.stringify(this.scanAssets.moduleUri)};
         const workerUri = ${JSON.stringify(this.scanAssets.workerUri)};
         const cmapUri = ${JSON.stringify(this.scanAssets.cmapUri)};
         const activeRenders = new Map();
+        let workerSourcePromise;
+        if (testMode) {
+          window.addEventListener('error', error => vscodeBridge.postMessage({ command: 'scanTestTrace', step: 'window error: ' + error.message }));
+          window.addEventListener('unhandledrejection', error => vscodeBridge.postMessage({ command: 'scanTestTrace', step: 'rejection: ' + String(error.reason) }));
+        }
         window.addEventListener('message', async event => {
           const request = event.data;
           if (request?.command === 'cancelPdfRender') {
@@ -442,15 +474,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (request?.command !== 'renderPdfPage') return;
           const active = { cancelled: false, task: undefined };
           activeRenders.set(request.id, active);
-          let documentTask, documentHandle, pageHandle;
+          let pdfjs, documentTask, documentHandle, pageHandle, workerPort, workerBlobUrl;
           try {
-            const pdfjs = await import(moduleUri);
+            if (testMode) vscodeBridge.postMessage({ command: 'scanTestTrace', step: 'request received' });
+            pdfjs = await import(moduleUri);
+            if (testMode) vscodeBridge.postMessage({ command: 'scanTestTrace', step: 'pdf.js imported' });
             pdfjs.GlobalWorkerOptions.workerSrc = workerUri;
+            workerSourcePromise ||= fetch(workerUri).then(response => {
+              if (!response.ok) throw new Error('Không tải được pdf.js worker: HTTP ' + response.status);
+              return response.blob();
+            }).catch(error => { workerSourcePromise = undefined; throw error; });
+            workerBlobUrl = URL.createObjectURL(await workerSourcePromise);
+            workerPort = new Worker(workerBlobUrl, { type: 'module' });
+            pdfjs.GlobalWorkerOptions.workerPort = workerPort;
+            if (testMode) vscodeBridge.postMessage({ command: 'scanTestTrace', step: 'same-origin worker started' });
             const binary = atob(request.pdfBase64);
             const pdfBytes = Uint8Array.from(binary, character => character.charCodeAt(0));
             documentTask = pdfjs.getDocument({ data: pdfBytes, cMapUrl: cmapUri, cMapPacked: true, isEvalSupported: false });
+            if (testMode) vscodeBridge.postMessage({ command: 'scanTestTrace', step: 'getDocument started' });
             documentHandle = await documentTask.promise;
+            if (testMode) vscodeBridge.postMessage({ command: 'scanTestTrace', step: 'getDocument resolved' });
             if (active.cancelled) return;
+            const activePort = documentTask._worker?.port;
+            const worker = activePort instanceof Worker ? 'real' : activePort ? 'fake' : 'unknown';
             pageHandle = await documentHandle.getPage(request.page);
             const initial = pageHandle.getViewport({ scale: 1 });
             const scale = Math.min(4, 1599 / Math.max(initial.width, initial.height));
@@ -460,9 +506,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             canvas.height = Math.max(1, Math.floor(viewport.height));
             active.task = pageHandle.render({ canvasContext: canvas.getContext('2d'), viewport });
             await active.task.promise;
+            if (testMode) vscodeBridge.postMessage({ command: 'scanTestTrace', step: 'canvas rendered' });
+            let nonwhitePixels = 0, sampledPixels = 0;
+            if (testMode) {
+              const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+              for (let y = 0; y < canvas.height; y += Math.max(1, Math.floor(canvas.height / 32))) {
+                for (let x = 0; x < canvas.width; x += Math.max(1, Math.floor(canvas.width / 32))) {
+                  const i = (y * canvas.width + x) * 4;
+                  sampledPixels++;
+                  if (pixels[i] < 240 || pixels[i + 1] < 240 || pixels[i + 2] < 240) nonwhitePixels++;
+                }
+              }
+            }
             const dataUrl = canvas.toDataURL('image/jpeg', 0.80);
             if ((dataUrl.length - 'data:image/jpeg;base64,'.length) * 3 / 4 > 2000000) throw new Error('Ảnh trang scan vượt giới hạn 2 MB.');
-            if (!active.cancelled) vscodeBridge.postMessage({ command: 'renderedPdfPage', id: request.id, page: request.page, width: canvas.width, height: canvas.height, dataUrl });
+            if (!active.cancelled) vscodeBridge.postMessage({ command: 'renderedPdfPage', id: request.id, page: request.page, width: canvas.width, height: canvas.height, dataUrl,
+              ...(testMode ? { testDiagnostics: { worker, nonwhitePixels, sampledPixels } } : {}) });
             canvas.width = canvas.height = 0;
           } catch (error) {
             if (!active.cancelled) vscodeBridge.postMessage({ command: 'pdfRenderError', id: request.id, error: String(error) });
@@ -471,8 +530,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             try { pageHandle?.cleanup(); } catch {}
             try { await documentHandle?.destroy(); } catch {}
             try { await documentTask?.destroy(); } catch {}
+            if (pdfjs) pdfjs.GlobalWorkerOptions.workerPort = null;
+            try { workerPort?.terminate(); } catch {}
+            if (workerBlobUrl) URL.revokeObjectURL(workerBlobUrl);
           }
         });
+        if (testMode) vscodeBridge.postMessage({ command: 'scanTestReady', viewId });
       </script>` : ""}
     `;
 

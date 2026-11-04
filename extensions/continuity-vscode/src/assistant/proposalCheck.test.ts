@@ -160,7 +160,7 @@ test("cancel mid-check terminates command, cleans temp and reports cancelled", a
 
 test("manifest declares trust restriction and Composer renders check status without vscode runtime import", () => {
   const manifest = JSON.parse(readFileSync("package.json", "utf8"));
-  assert.equal(manifest.version, "0.3.4");
+  assert.equal(manifest.version, "0.3.5");
   assert.deepEqual(manifest.capabilities.untrustedWorkspaces.restrictedConfigurations, ["continuity.assistant.checkCommand"]);
   assert.equal(manifest.contributes.configuration.properties["continuity.assistant.checkTimeoutSeconds"].default, 120);
   const sidebar = readFileSync("src/sidebarViews.ts", "utf8");

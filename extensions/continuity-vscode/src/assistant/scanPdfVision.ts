@@ -8,7 +8,13 @@ export const SCAN_MAX_CONTEXT_CHARS = 40_000;
 export const SCAN_TRANSCRIPTION_PROMPT = "Chỉ chép nguyên văn toàn bộ chữ nhìn thấy trên trang này. Giữ nguyên tiếng Việt có dấu, thứ tự dòng, ký hiệu và số. Không giải bài, không thêm code, không suy đoán chữ không đọc được. Nếu không đọc được, trả về chuỗi rỗng.";
 export const VISION_PICKER_GUIDANCE = "Model hiện tại không đọc được ảnh PDF. Hãy dùng lệnh Assistant: Select Local Provider and Model để chọn một model LM Studio VLM đã nạp.";
 
-export interface RenderedScanPage { dataUrl: string; width: number; height: number; }
+export interface RenderedScanPage {
+  dataUrl: string;
+  width: number;
+  height: number;
+  /** Present only in extension-host integration tests. */
+  testDiagnostics?: { worker: "real" | "fake" | "unknown"; nonwhitePixels: number; sampledPixels: number };
+}
 export interface ScanPdfInput {
   pageTexts: string[];
   scannedPages: number[];

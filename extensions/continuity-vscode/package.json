@@ -2,7 +2,7 @@
   "name": "continuity-vscode",
   "displayName": "Continuity Workflow",
   "description": "Offline, read-only Continuity workflow views with an explicit local Ollama helper and Offline Code Assistant.",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "private": true,
   "publisher": "quoczai22",
   "license": "MIT",
@@ -233,6 +233,7 @@
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json && node scripts/vendor-pdfjs.cjs",
     "test": "npm run build && node --test dist/**/*.test.js",
+    "test:webview": "npm run build && node scripts/test-webview.cjs",
     "package": "npm run build && vsce package --out continuity-workflow.vsix"
   },
   "devDependencies": {
