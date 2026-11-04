@@ -14,6 +14,21 @@ function escapeHtml(value: string): string {
   })[c] ?? c);
 }
 
+export interface LocalModelLabel { provider: "ollama" | "lmstudio"; model: string; }
+
+export function localProviderName(provider: LocalModelLabel["provider"]): string {
+  return provider === "lmstudio" ? "LM Studio" : "Ollama";
+}
+
+export function localQueryFailure(provider: LocalModelLabel["provider"]): string {
+  return `${localProviderName(provider)} query failed.`;
+}
+
+function assistantLabel(config: LocalModelLabel): string {
+  const provider = localProviderName(config.provider);
+  return `${provider} (${config.model.trim() || "model not selected"})`;
+}
+
 function promptPreview(value: string, maxLength = 160): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
@@ -236,7 +251,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private readonly store: AssistantStore,
     private readonly onSendPrompt: (prompt: string, selectionOnly: boolean, attachmentPath?: string) => Promise<void>,
     // Injected so this module keeps no runtime dependency on the vscode API (its tests run in plain Node).
-    private readonly pickAttachment: () => Promise<string | undefined> = async () => undefined
+    private readonly pickAttachment: () => Promise<string | undefined> = async () => undefined,
+    private readonly currentModel: () => LocalModelLabel = () => ({ provider: "ollama", model: "" })
   ) {}
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -265,6 +281,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const state = this.store.getState();
     const active = state.sessions.find(s => s.id === state.activeSessionId);
     const profile = state.styleProfile;
+    const modelLabel = assistantLabel(this.currentModel());
 
     const profileBadge = profile
       ? `<div style="font-size: 0.85em; margin-bottom: 8px; color: var(--vscode-descriptionForeground);">
@@ -278,7 +295,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const userMessages = messages.filter(message => message.sender === "user");
     const msgs = messages.map(m => `
       <div id="message-${escapeHtml(m.id)}" class="${m.sender === 'user' ? 'msg-user' : 'msg-assistant'}" data-message-id="${escapeHtml(m.id)}">
-        <strong>${m.sender === 'user' ? 'You' : 'Ollama (qwen2.5-coder)'}:</strong>
+        <strong>${m.sender === 'user' ? 'You' : m.sender === 'system' ? 'System' : escapeHtml(modelLabel)}:</strong>
         <div>${renderSafeMarkdown(m.text)}</div>
         ${m.retrievedFiles?.length ? `<div style="margin-top:6px;font-size:.85em;color:var(--vscode-descriptionForeground)">Local context: ${m.retrievedFiles.map(escapeHtml).join(", ")}</div>` : ""}
       </div>
@@ -301,7 +318,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         </div>
       </div>
       ${this.attachment ? `<div class="attachment-chip">Attached: ${escapeHtml(basename(this.attachment))} <button id="btnRemoveAttachment" class="secondary-btn" type="button" aria-label="Remove attachment">Remove</button></div>` : ""}
-      <textarea id="promptInput" rows="3" placeholder="Ask the local model, attach an exam PDF/image, or review selection..."></textarea>
+      <textarea id="promptInput" rows="3" placeholder="Ask ${escapeHtml(modelLabel)}, attach a PDF/image, or review selection..."></textarea>
       <div>
         <button id="btnSend">Send File/Prompt</button>
         <button id="btnAttach" class="secondary-btn" type="button">Attach PDF/Image</button>

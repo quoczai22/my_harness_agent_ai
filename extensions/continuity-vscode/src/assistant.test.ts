@@ -44,7 +44,7 @@ test("pending agent question survives store reload and clears after resumption",
 });
 import { DEFAULT_OFFLINE_OLLAMA_TIMEOUT_MS, ensureLocalOllamaService, OLLAMA_TAGS_URL, queryOfflineOllama, resolveOfflineOllamaTimeout } from "./ollamaClient";
 import { renderNonceProtectedHtml, renderSafeMarkdown, splitAssistantResponse } from "./chatResponse";
-import { wrapWebviewHtml, SessionsViewProvider } from "./sidebarViews";
+import { wrapWebviewHtml, SessionsViewProvider, ChatViewProvider, localQueryFailure, type LocalModelLabel } from "./sidebarViews";
 
 test("security assertion: ignore filtering blocks .git, node_modules, dist, .env, and binary files", () => {
   // Ignored directory paths
@@ -454,4 +454,50 @@ test("Sessions webview binds selection controls and marks active row", () => {
   assert.match(source, /command: 'selectSession'/);
   assert.match(source, /session-active/);
   assert.match(source, /onSessionChanged\(\)/);
+});
+
+test("chat labels and placeholder follow configured provider/model on refresh", async () => {
+  const data: Record<string, unknown> = {};
+  const store = new AssistantStore({ get: <T>(key: string) => data[key] as T | undefined, update: async (key: string, value: unknown) => { data[key] = value; } });
+  const session = await store.createSession("Labels");
+  await store.addMessage(session.id, { sender: "user", text: "hello" });
+  await store.addMessage(session.id, { sender: "assistant", text: "answer" });
+  await store.addMessage(session.id, { sender: "system", text: "error" });
+  let configured: LocalModelLabel = { provider: "ollama", model: "coder:7b" };
+  let html = "";
+  const view: any = { webview: {
+    options: {},
+    set html(value: string) { html = value; },
+    onDidReceiveMessage() { return { dispose() {} }; }
+  } };
+  const chat = new ChatViewProvider(store, async () => {}, async () => undefined, () => configured);
+  chat.resolveWebviewView(view);
+  assert.match(html, /<strong>You:<\/strong>/);
+  assert.match(html, /<strong>Ollama \(coder:7b\):<\/strong>/);
+  assert.match(html, /<strong>System:<\/strong>/);
+  assert.match(html, /placeholder="Ask Ollama \(coder:7b\),/);
+
+  configured = { provider: "lmstudio", model: "qwen3.5-2b" };
+  chat.refresh();
+  assert.match(html, /<strong>LM Studio \(qwen3\.5-2b\):<\/strong>/);
+  assert.match(html, /placeholder="Ask LM Studio \(qwen3\.5-2b\),/);
+  assert.doesNotMatch(html, /Ollama \(coder:7b\)/);
+
+  configured = { provider: "lmstudio", model: '<script>alert("x")</script>' };
+  chat.refresh();
+  assert.match(html, /LM Studio \(&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt;\)/);
+  assert.doesNotMatch(html, /<strong>LM Studio \(<script>/);
+
+  configured = { provider: "lmstudio", model: "" };
+  chat.refresh();
+  assert.match(html, /LM Studio \(model not selected\)/);
+  assert.doesNotMatch(html, /qwen2\.5-coder/);
+});
+
+test("generic query failure names the selected provider", () => {
+  assert.equal(localQueryFailure("ollama"), "Ollama query failed.");
+  assert.equal(localQueryFailure("lmstudio"), "LM Studio query failed.");
+  const source = readFileSync("src/extension.ts", "utf8");
+  assert.match(source, /localQueryFailure\(currentLocalModel\(\)\.provider\)/);
+  assert.match(source, /onDidChangeConfiguration/);
 });

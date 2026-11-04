@@ -3,7 +3,7 @@ import { basename } from "node:path";
 import { ContinuityState, createOllamaSummaryPayload, extractTimeline, readWorkspaceState } from "./state";
 import { requestOllama, requestOpenAI } from "./providers";
 import { AssistantStore, parsePortableSessions } from "./assistantStore";
-import { SessionsViewProvider, ChatViewProvider, ComposerViewProvider } from "./sidebarViews";
+import { SessionsViewProvider, ChatViewProvider, ComposerViewProvider, localQueryFailure, type LocalModelLabel } from "./sidebarViews";
 import { ensureLocalOllamaService, queryOfflineOllama } from "./ollamaClient";
 import { queryLocalLmStudio } from "./lmStudioClient";
 import { DEFAULT_OLLAMA_MODEL } from "./assistant";
@@ -44,6 +44,17 @@ class WorkflowProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 }
 
 function activeFolder() { return vscode.workspace.workspaceFolders?.[0]; }
+
+function currentLocalModel(): LocalModelLabel {
+  const config = vscode.workspace.getConfiguration("continuity");
+  const provider = config.get<string>("offlineAssistantProvider", "ollama") === "lmstudio" ? "lmstudio" : "ollama";
+  return {
+    provider,
+    model: provider === "lmstudio"
+      ? config.get<string>("lmStudioModel", "")
+      : config.get<string>("offlineAssistantModel", DEFAULT_OLLAMA_MODEL)
+  };
+}
 
 async function localModelResponse(prompt: string, imageDataUrl?: string): Promise<string> {
   const config = vscode.workspace.getConfiguration("continuity");
@@ -250,7 +261,7 @@ export async function activate(context: vscode.ExtensionContext) {
     } catch (err: any) {
       await assistantStore.addMessage(currentSession.id, { sender: "system", text: `Error: ${err?.message ?? err}` });
       sessionsProvider?.refresh();
-      vscode.window.showErrorMessage(err?.message ?? "Ollama query failed.");
+      vscode.window.showErrorMessage(err?.message ?? localQueryFailure(currentLocalModel().provider));
     }
   };
   sessionsProvider = new SessionsViewProvider(assistantStore, () => chatProvider.refresh());
@@ -260,7 +271,11 @@ export async function activate(context: vscode.ExtensionContext) {
       filters: { "PDF or image": ["pdf", "png", "jpg", "jpeg", "webp"] }
     });
     return picked?.[0]?.fsPath;
-  });
+  }, currentLocalModel);
+
+  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
+    if (["offlineAssistantProvider", "offlineAssistantModel", "lmStudioModel"].some(key => event.affectsConfiguration(`continuity.${key}`))) chatProvider.refresh();
+  }));
 
   context.subscriptions.push(vscode.window.registerWebviewViewProvider(SessionsViewProvider.viewType, sessionsProvider));
   context.subscriptions.push(vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider));
