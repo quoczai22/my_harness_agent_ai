@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { basename } from "node:path";
 import { ContinuityState, createOllamaSummaryPayload, extractTimeline, readWorkspaceState } from "./state";
 import { requestOllama, requestOpenAI } from "./providers";
 import { AssistantStore, parsePortableSessions } from "./assistantStore";
@@ -15,7 +16,7 @@ import { WorkspaceIndexManager } from "./assistant/workspaceIndex";
 import { findRelevantFiles, formatRetrievedContext, isIndexForWorkspace } from "./assistant/retrieval";
 import { AutoWriteAuditStore, TrustedAutoWriteGateway } from "./assistant/trustedGateway";
 import { runTrustedAgentProposal } from "./assistant/naturalProposal";
-import { readLocalAttachment } from "./assistant/localAttachments";
+import { readChosenAttachment, readLocalAttachment } from "./assistant/localAttachments";
 import { runLocalReadLoop } from "./assistant/agentLoop";
 
 const OPENAI_KEY_SECRET = "continuity.openaiApiKey";
@@ -184,14 +185,14 @@ export async function activate(context: vscode.ExtensionContext) {
   let sessionsProvider: SessionsViewProvider;
   let chatProvider: ChatViewProvider;
 
-  const onSendPrompt = async (prompt: string, selectionOnly: boolean) => {
+  const onSendPrompt = async (prompt: string, selectionOnly: boolean, attachmentPath?: string) => {
     let currentSession = assistantStore.getState().sessions.find(s => s.id === assistantStore.getState().activeSessionId);
     if (!currentSession) {
       currentSession = await assistantStore.createSession("New Chat");
       sessionsProvider?.refresh();
     }
     try {
-      if (/^\/agent\s+/i.test(prompt) || currentSession.pendingAgentTask) {
+      if (!attachmentPath && (/^\/agent\s+/i.test(prompt) || currentSession.pendingAgentTask)) {
         const folder = activeFolder();
         if (!folder) throw new Error("Open a project folder before running the local agent.");
         const task = /^\/agent\s+/i.test(prompt) ? prompt.replace(/^\/agent\s+/i, "").trim() : `${currentSession.pendingAgentTask}\nUser clarification: ${prompt}`;
@@ -216,11 +217,15 @@ export async function activate(context: vscode.ExtensionContext) {
       const safe = vscode.window.activeTextEditor ? await activeEditorContext(selectionOnly) : undefined;
       const transcript = assistantStore.getBoundedConversation(currentSession.id);
       const historyBlock = transcript ? `\n\nActive session transcript (user and assistant messages only):\n${transcript}` : "";
-      await assistantStore.addMessage(currentSession.id, { sender: "user", text: `${prompt}${safe ? `\n\n[Safe ${safe.label} context attached]` : ""}` });
+      const attachedNote = attachmentPath ? `\n\n[Attached: ${basename(attachmentPath)}]` : "";
+      await assistantStore.addMessage(currentSession.id, { sender: "user", text: `${prompt}${attachedNote}${safe ? `\n\n[Safe ${safe.label} context attached]` : ""}` });
       sessionsProvider?.refresh();
       const relativePath = safe ? vscode.workspace.asRelativePath(safe.uri, false).replace(/\\/g, "/") : undefined;
       const folder = activeFolder();
-      const attachment = await readLocalAttachment(prompt, folder, vscode.workspace.getConfiguration("continuity").get<string>("pdfTextExecutable", ""));
+      const pdfTextExecutable = vscode.workspace.getConfiguration("continuity").get<string>("pdfTextExecutable", "");
+      const attachment = attachmentPath
+        ? await readChosenAttachment(attachmentPath, prompt, pdfTextExecutable)
+        : await readLocalAttachment(prompt, folder, pdfTextExecutable);
       const index = vscode.workspace.getConfiguration("continuity").get<boolean>("workspaceIndex.enabled", false) ? workspaceIndexManager.getIndex() : null;
       const candidates = folder && isIndexForWorkspace(index, folder.uri.fsPath)
         ? findRelevantFiles(`${attachment.text}\n${safe?.text.slice(0, 2000) ?? ""}`, index.files).filter(item => item.relativePath !== relativePath)
@@ -249,7 +254,13 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   };
   sessionsProvider = new SessionsViewProvider(assistantStore, () => chatProvider.refresh());
-  chatProvider = new ChatViewProvider(assistantStore, onSendPrompt);
+  chatProvider = new ChatViewProvider(assistantStore, onSendPrompt, async () => {
+    const picked = await vscode.window.showOpenDialog({
+      canSelectMany: false, openLabel: "Attach",
+      filters: { "PDF or image": ["pdf", "png", "jpg", "jpeg", "webp"] }
+    });
+    return picked?.[0]?.fsPath;
+  });
 
   context.subscriptions.push(vscode.window.registerWebviewViewProvider(SessionsViewProvider.viewType, sessionsProvider));
   context.subscriptions.push(vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider));

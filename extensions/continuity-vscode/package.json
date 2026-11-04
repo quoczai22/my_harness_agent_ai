@@ -2,7 +2,7 @@
   "name": "continuity-vscode",
   "displayName": "Continuity Workflow",
   "description": "Offline, read-only Continuity workflow views with an explicit local Ollama helper and Offline Code Assistant.",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "publisher": "quoczai22",
   "license": "MIT",
@@ -161,7 +161,10 @@
         },
         "continuity.offlineAssistantProvider": {
           "type": "string",
-          "enum": ["ollama", "lmstudio"],
+          "enum": [
+            "ollama",
+            "lmstudio"
+          ],
           "default": "ollama",
           "description": "Local inference provider for Offline Assistant and trusted proposal planning."
         },
@@ -204,7 +207,7 @@
     }
   },
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json && node scripts/vendor-pdfjs.cjs",
     "test": "npm run build && node --test dist/**/*.test.js",
     "package": "npm run build && vsce package --out continuity-workflow.vsix"
   },
@@ -217,5 +220,8 @@
   "repository": {
     "url": "https://github.com/quoczai22/my_harness_agent_ai.git",
     "type": "git"
+  },
+  "dependencies": {
+    "pdfjs-dist": "6.5.438"
   }
 }

@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { randomUUID } from "node:crypto";
+import { basename } from "node:path";
 import { AssistantStore, ChatSession } from "./assistantStore";
 import { renderNonceProtectedHtml, renderSafeMarkdown } from "./chatResponse";
 
@@ -58,6 +59,14 @@ export function wrapWebviewHtml(title: string, bodyContent: string): string {
     }
     .secondary-btn:hover {
       background-color: var(--vscode-button-secondaryHoverBackground);
+    }
+    .attachment-chip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+      font-size: 0.9em;
+      color: var(--vscode-descriptionForeground);
     }
     .card {
       background-color: var(--vscode-editor-background);
@@ -220,10 +229,14 @@ export class SessionsViewProvider implements vscode.WebviewViewProvider {
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "continuity.assistant.chat";
   private _view?: vscode.WebviewView;
+  /** File chosen with the Attach button; sent with the next prompt, then cleared. */
+  private attachment?: string;
 
   constructor(
     private readonly store: AssistantStore,
-    private readonly onSendPrompt: (prompt: string, selectionOnly: boolean) => Promise<void>
+    private readonly onSendPrompt: (prompt: string, selectionOnly: boolean, attachmentPath?: string) => Promise<void>,
+    // Injected so this module keeps no runtime dependency on the vscode API (its tests run in plain Node).
+    private readonly pickAttachment: () => Promise<string | undefined> = async () => undefined
   ) {}
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -232,11 +245,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.refresh();
 
     webviewView.webview.onDidReceiveMessage(async message => {
-      if (message.command === "send") {
-        await this.onSendPrompt(message.text, message.selectionOnly);
+      if (message.command === "attach") {
+        const picked = await this.pickAttachment();
+        if (picked) { this.attachment = picked; this.refresh(); }
+      } else if (message.command === "removeAttachment") {
+        this.attachment = undefined;
+        this.refresh();
+      } else if (message.command === "send") {
+        const attachment = this.attachment;
+        this.attachment = undefined;
+        await this.onSendPrompt(message.text, message.selectionOnly, attachment);
         this.refresh();
       }
-    });  }
+    });
+  }
 
   refresh(): void {
     if (!this._view) return;
@@ -278,9 +300,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           ${msgs}
         </div>
       </div>
-      <textarea id="promptInput" rows="3" placeholder="Ask qwen2.5-coder or review selection..."></textarea>
+      ${this.attachment ? `<div class="attachment-chip">Attached: ${escapeHtml(basename(this.attachment))} <button id="btnRemoveAttachment" class="secondary-btn" type="button" aria-label="Remove attachment">Remove</button></div>` : ""}
+      <textarea id="promptInput" rows="3" placeholder="Ask the local model, attach an exam PDF/image, or review selection..."></textarea>
       <div>
         <button id="btnSend">Send File/Prompt</button>
+        <button id="btnAttach" class="secondary-btn" type="button">Attach PDF/Image</button>
         <button id="btnReviewSelection" class="secondary-btn">Review Selection</button>
       </div>
       <script>
@@ -295,7 +319,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           } else if (typeof priorState.scrollTop === 'number') {
             messages.scrollTop = Math.min(priorState.scrollTop, Math.max(0, messages.scrollHeight - messages.clientHeight));
           }
-          vscode.setState({ latestMessageId, scrollTop: messages.scrollTop });
+          vscode.setState({ ...(vscode.getState() || {}), latestMessageId, scrollTop: messages.scrollTop });
         });
         messages?.addEventListener('scroll', () => {
           const state = vscode.getState() || {};
@@ -307,14 +331,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             document.getElementById(targetId || '')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
           });
         });
+        const hasAttachment = ${JSON.stringify(Boolean(this.attachment))};
+        const input = document.getElementById('promptInput');
+        // The view re-renders after attach/remove; keep what the user was typing.
+        if (input && typeof priorState.draft === 'string') input.value = priorState.draft;
+        input?.addEventListener('input', () => vscode.setState({ ...(vscode.getState() || {}), draft: input.value }));
         function send(selectionOnly) {
-          const input = document.getElementById('promptInput');
-          if (input && input.value.trim()) {
+          if (input && (input.value.trim() || hasAttachment)) {
             vscode.postMessage({ command: 'send', text: input.value, selectionOnly });
             input.value = '';
+            vscode.setState({ ...(vscode.getState() || {}), draft: '' });
           }
         }
         document.getElementById('btnSend')?.addEventListener('click', () => send(false));
+        document.getElementById('btnAttach')?.addEventListener('click', () => vscode.postMessage({ command: 'attach' }));
+        document.getElementById('btnRemoveAttachment')?.addEventListener('click', () => vscode.postMessage({ command: 'removeAttachment' }));
         document.getElementById('btnReviewSelection')?.addEventListener('click', () => send(true));
       </script>
     `;
