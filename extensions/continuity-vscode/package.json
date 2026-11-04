@@ -2,7 +2,7 @@
   "name": "continuity-vscode",
   "displayName": "Continuity Workflow",
   "description": "Offline, read-only Continuity workflow views with an explicit local Ollama helper and Offline Code Assistant.",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "publisher": "quoczai22",
   "license": "MIT",
@@ -14,6 +14,12 @@
     "Other"
   ],
   "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "restrictedConfigurations": ["continuity.assistant.checkCommand"]
+    }
+  },
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -181,6 +187,20 @@
           "type": "string",
           "default": "",
           "description": "Identifier of a model loaded in the local LM Studio server."
+        },
+        "continuity.assistant.checkCommand": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "description": "Optional project check command for proposed edits. Runs only after confirmation in a trusted workspace, on a temporary copy. Use {files} for proposed file paths. On Windows, .cmd/.bat cannot run without a shell; use an .exe (for example dart.exe analyze, dotnet build, or node path/to/tsc.js)."
+        },
+        "continuity.assistant.checkTimeoutSeconds": {
+          "type": "number",
+          "default": 120,
+          "minimum": 1,
+          "maximum": 300,
+          "scope": "resource",
+          "description": "Maximum seconds for a proposed-edit check command (1–300)."
         },
         "continuity.pdfTextExecutable": {
           "type": "string",

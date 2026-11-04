@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { basename } from "node:path";
+import { realpath } from "node:fs/promises";
 import { ContinuityState, createOllamaSummaryPayload, extractTimeline, readWorkspaceState } from "./state";
 import { requestOllama, requestOpenAI } from "./providers";
 import { AssistantStore, parsePortableSessions } from "./assistantStore";
@@ -18,6 +19,7 @@ import { AutoWriteAuditStore, TrustedAutoWriteGateway } from "./assistant/truste
 import { runTrustedAgentProposal } from "./assistant/naturalProposal";
 import { readChosenAttachment, readLocalAttachment } from "./assistant/localAttachments";
 import { runLocalReadLoop } from "./assistant/agentLoop";
+import { checkProposalLoop, commandHash } from "./assistant/proposalCheck";
 import { chooseLocalModel, ensureLmStudioModelLoaded, ensureLmStudioServer, listLmStudioModels, listOllamaModels, persistLocalModelChoice, type LocalProvider, type PickedModel } from "./assistant/localModelPicker";
 
 const OPENAI_KEY_SECRET = "continuity.openaiApiKey";
@@ -323,7 +325,42 @@ export async function activate(context: vscode.ExtensionContext) {
       const parsed = relativePath ? splitAssistantResponse(response, relativePath) : { answer: response, proposal: undefined };
       await assistantStore.addMessage(currentSession.id, { sender: "assistant", text: parsed.answer, retrievedFiles: retrieved.map(item => item.relativePath) });
       sessionsProvider?.refresh();
-      if (parsed.proposal && relativePath) composerProvider.setProposedDiff(JSON.stringify(parsed.proposal), relativePath);
+      if (parsed.proposal && relativePath && safe) {
+        const targetFolder = vscode.workspace.getWorkspaceFolder(safe.uri);
+        if (!targetFolder) throw new Error("Proposal target is outside the selected project.");
+        const checkConfig = vscode.workspace.getConfiguration("continuity", safe.uri);
+        const checkCommand = checkConfig.get<string>("assistant.checkCommand", "");
+        const timeoutSeconds = checkConfig.get<number>("assistant.checkTimeoutSeconds", 120);
+        let approved = false;
+        const trusted = vscode.workspace.isTrusted;
+        if (checkCommand.trim() && trusted) {
+          const root = await realpath(targetFolder.uri.fsPath);
+          const approvalKey = `continuity.checkCommands.${commandHash(root)}`;
+          const approvedHashes = context.workspaceState.get<string[]>(approvalKey, []);
+          const hash = commandHash(checkCommand);
+          approved = approvedHashes.includes(hash);
+          if (!approved) {
+            const choice = await vscode.window.showWarningMessage(`Run this project check command on a temporary copy?\n\n${checkCommand}`, { modal: true }, "Run Check");
+            if (choice === "Run Check") {
+              await context.workspaceState.update(approvalKey, [...approvedHashes, hash]);
+              approved = true;
+            }
+          }
+        }
+        const controller = new AbortController();
+        const checked = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Checking proposed edit", cancellable: true }, async (_progress, token) => {
+          token.onCancellationRequested(() => controller.abort());
+          return checkProposalLoop({
+            workspaceRoot: targetFolder.uri.fsPath,
+            relativePath,
+            sourceText: (await vscode.workspace.openTextDocument(safe.uri)).getText(),
+            proposal: parsed.proposal!, command: checkCommand, timeoutSeconds, trusted, approved,
+            signal: controller.signal,
+            repair: repairPrompt => localModelResponse(`${fullPrompt}\n\n${repairPrompt}`)
+          });
+        });
+        composerProvider.setProposedDiff(JSON.stringify(checked.proposal), relativePath, checked);
+      }
     } catch (err: any) {
       await assistantStore.addMessage(currentSession.id, { sender: "system", text: `Error: ${err?.message ?? err}` });
       sessionsProvider?.refresh();

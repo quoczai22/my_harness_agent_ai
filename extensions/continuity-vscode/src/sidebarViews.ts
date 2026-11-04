@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { AssistantStore, ChatSession } from "./assistantStore";
 import { renderNonceProtectedHtml, renderSafeMarkdown } from "./chatResponse";
+import type { ProposalCheckResult } from "./assistant/proposalCheck";
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, c => ({
@@ -384,10 +385,12 @@ export class ComposerViewProvider implements vscode.WebviewViewProvider {
 
   private currentDiff: string = "";
   private currentFile: string = "";
+  private currentCheck?: Pick<ProposalCheckResult, "status" | "diagnostics" | "rounds" | "kind">;
 
-  setProposedDiff(diff: string, targetFile: string): void {
+  setProposedDiff(diff: string, targetFile: string, check?: Pick<ProposalCheckResult, "status" | "diagnostics" | "rounds" | "kind">): void {
     this.currentDiff = diff;
     this.currentFile = targetFile;
+    this.currentCheck = check;
     this.refresh();
   }
 
@@ -400,9 +403,11 @@ export class ComposerViewProvider implements vscode.WebviewViewProvider {
       if (message.command === "apply") {
         await this.onApply(this.currentDiff, this.currentFile);
         this.currentDiff = "";
+        this.currentCheck = undefined;
         this.refresh();
       } else if (message.command === "discard") {
         this.currentDiff = "";
+        this.currentCheck = undefined;
         this.refresh();
       }
     });  }
@@ -414,6 +419,8 @@ export class ComposerViewProvider implements vscode.WebviewViewProvider {
       ? `
         <div>
           <h4>Target: ${escapeHtml(this.currentFile || "Active Document")}</h4>
+          <p><strong>Check: ${escapeHtml(this.currentCheck?.status === "passed" ? "passed" : this.currentCheck?.status === "failed" ? this.currentCheck.kind === "execution" ? "check failed" : `still failing after ${this.currentCheck.rounds} repair round(s)` : this.currentCheck?.status === "not-configured" ? "check command not configured" : this.currentCheck?.status === "blocked-untrusted" ? "blocked: untrusted workspace" : this.currentCheck?.status === "blocked-unapproved" ? "blocked: command not approved" : this.currentCheck?.status === "cancelled" ? "cancelled" : "not checked")}</strong></p>
+          ${this.currentCheck?.diagnostics && this.currentCheck.status !== "passed" ? `<pre>${escapeHtml(this.currentCheck.diagnostics.slice(0, 65536))}</pre>` : ""}
           <pre>${escapeHtml(this.currentDiff)}</pre>
           <div style="margin-top: 10px;">
             <button id="btnApply">Apply Changes</button>
