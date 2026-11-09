@@ -1,5 +1,7 @@
 # Add a discussion gate
 
+> **Status:** Superseded, never started: `raise_discussion` already exists in src/index.ts; archived during cleanup on 2026-11-09.
+
 ## Why
 
 The workflow detects out-of-scope work but has no durable mechanism to stop both agents while an ambiguity is resolved.
