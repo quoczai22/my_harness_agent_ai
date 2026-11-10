@@ -81,12 +81,14 @@ export interface HarnessSession {
   messages?: HarnessMessage[];
   providerConversations?: Partial<Record<ProviderId, string>>;
   proposals?: HarnessProposal[];
+  /** Claude Code session id used by the main chat (resumed with --resume). */
+  claudeSessionId?: string;
 }
 
 export interface HarnessMessage {
   id: string;
   role: "user" | "assistant" | "system";
-  provider?: ProviderId;
+  provider?: ProviderId | "claude";
   content: string;
   createdAt: string;
   usage?: Record<string, number>;

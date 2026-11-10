@@ -43,7 +43,7 @@ A pipeline is a JSON document stored per repository in the Harness state directo
 Stage kinds:
 
 - `context`: assembles the existing bounded context packet from listed documentation sources; no model call.
-- `agent`: runs one agent in a role (`plan`, `implement`, `test`, `review`). Agents: `claude`, `codex`, `antigravity`, `lmstudio`, `ollama`.
+- `agent`: runs one agent in a role (`plan`, `implement`, `test`, `review`). Agents: `claude`, `codex`, `antigravity`, `lmstudio`, `ollama`. LM Studio and Ollama answer through their loopback HTTP APIs and cannot edit files, so they take only reading roles (`plan`, `test`, `review`).
 - `command`: runs the repository's Build or Test command.
 - `gate`: a command and an agent verdict that must both pass.
 - `human`: pauses the run until the user approves or rejects in the UI.

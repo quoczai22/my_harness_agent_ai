@@ -22,6 +22,8 @@ import {
   registerUserWorkspace,
 } from "./workspaceRegistry.js";
 import { runAntigravity } from "./antigravityAdapter.js";
+import { LoopEngine } from "./loopEngine.js";
+import { handleLoopRequest } from "./loopRoutes.js";
 
 export interface RegisteredWorkspace {
   id: string;
@@ -1153,6 +1155,11 @@ export function createDashboardServer(options: DashboardOptions = {}) {
       loadUserWorkspaceRegistry(localRegistryPath),
     );
   const activeAntigravityRuns = new Map<string, AbortController>();
+  const loopStateRoot = join(workspaceRoot, ".continuity", "harness");
+  const loopEngine = new LoopEngine({
+    stateRoot: loopStateRoot,
+    agentConfigPath: process.env.HARNESS_AGENT_CONFIG ?? join(loopStateRoot, "agents.json"),
+  });
 
   const getTargetWorkspace = (
     workspaceId?: string | null,
@@ -1178,6 +1185,14 @@ export function createDashboardServer(options: DashboardOptions = {}) {
         `http://${req.headers.host ?? "localhost"}`,
       );
       const pathname = parsedUrl.pathname;
+
+      // The agent loop has its own same-origin checks and writes only inside run worktrees.
+      if (await handleLoopRequest(req, res, parsedUrl, {
+        engine: loopEngine,
+        localRegistryPath,
+        getTargetWorkspace,
+        readJson: readJsonRequest,
+      })) return;
 
       // Helper to send JSON without wildcard CORS
       const sendJson = (data: unknown, status = 200) => {
@@ -1821,7 +1836,9 @@ export function createDashboardServer(options: DashboardOptions = {}) {
         });
         server.on("error", reject);
       }),
+    loopEngine,
     stop: () => {
+      loopEngine.stopAll();
       for (const controller of activeAntigravityRuns.values()) controller.abort();
       activeAntigravityRuns.clear();
       return new Promise<void>((resolvePromise, reject) => {
