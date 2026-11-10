@@ -161,15 +161,23 @@ export interface Verdict {
   issues: string;
 }
 
-const VERDICT_RE = /^\s*\**VERDICT\**\s*:\s*\**\s*(PASS|FAIL)\b/gim;
+/**
+ * A verdict line holds nothing but the verdict, so an echoed instruction such
+ * as "VERDICT: PASS or VERDICT: FAIL" (some CLIs print the prompt) never counts.
+ */
+const VERDICT_RE = /^[ \t>]*\**VERDICT\**[ \t]*:[ \t]*\**[ \t]*(PASS|FAIL)[ \t]*\**[ \t]*\.?[ \t]*$/gim;
 
-/** Reads the last `VERDICT: PASS|FAIL` line and the text after `ISSUES:`. */
+/** Reads the last stand-alone `VERDICT: PASS|FAIL` line and the `ISSUES:` that follow it. */
 export function parseVerdict(output: string): Verdict {
   const matches = [...output.matchAll(VERDICT_RE)];
-  const verdict = matches.length ? (matches[matches.length - 1][1].toUpperCase() as "PASS" | "FAIL") : null;
-  const issuesMatch = /ISSUES\s*:([\s\S]*)$/i.exec(output);
-  const issues = issuesMatch ? issuesMatch[1].trim().slice(0, 8_000) : "";
-  return { verdict, issues };
+  if (!matches.length) return { verdict: null, issues: "" };
+  const last = matches[matches.length - 1];
+  const after = output.slice((last.index ?? 0) + last[0].length);
+  const issuesMatch = /ISSUES\s*:([\s\S]*)$/i.exec(after);
+  return {
+    verdict: last[1].toUpperCase() as "PASS" | "FAIL",
+    issues: issuesMatch ? issuesMatch[1].trim().slice(0, 8_000) : "",
+  };
 }
 
 /** Asks a loopback LM Studio or Ollama server (OpenAI-compatible API) for a reply. */

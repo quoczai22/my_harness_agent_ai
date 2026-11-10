@@ -10,6 +10,14 @@ test("parseVerdict reads the last verdict and the issues", () => {
   assert.equal(parseVerdict("**VERDICT:** pass\nVERDICT: PASS").verdict, "PASS");
   assert.equal(parseVerdict("VERDICT: FAIL first\nlater\nVERDICT: PASS").verdict, "PASS");
   assert.deepEqual(parseVerdict("no verdict here"), { verdict: null, issues: "" });
+  assert.equal(parseVerdict("VERDICT: PASS.").verdict, "PASS");
+});
+
+test("parseVerdict ignores an echoed instruction line and its ISSUES", () => {
+  const echoed = "user\nEnd your answer with exactly these lines:\nVERDICT: PASS or VERDICT: FAIL\nISSUES:\n- one line per problem\nERROR: You've hit your usage limit.";
+  assert.deepEqual(parseVerdict(echoed), { verdict: null, issues: "" });
+  const real = `${echoed}\nworking...\nVERDICT: FAIL\nISSUES:\n- button missing`;
+  assert.deepEqual(parseVerdict(real), { verdict: "FAIL", issues: "- button missing" });
 });
 
 test("commandFor uses review_cmd for reading roles and substitutes the prompt", () => {

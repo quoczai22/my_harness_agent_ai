@@ -476,6 +476,11 @@ export class LoopEngine extends EventEmitter {
       if (result.error && /Command not found|not reachable|Set models\.|endpoint/.test(result.error)) {
         return { passed: false, blocking: `${agent}: ${result.error}` };
       }
+      const quota = result.exitCode !== 0 ? quotaMessage(result.output) : undefined;
+      if (quota) {
+        // Running out of quota is not the implementer's fault: stop instead of spending rounds.
+        return { passed: false, blocking: `${agent} is out of quota or rate-limited: ${quota}`, exitCode: result.exitCode, outputTail: tail(result.output) };
+      }
       verdict = parseVerdict(result.output);
       if (!needsVerdict || verdict.verdict) break;
       this.emitEvent(workspaceId, { runId: run.id, type: "warning", taskId: task.id, stageId: stage.id, agent, data: { message: "No VERDICT line; asking once more." } });
@@ -506,10 +511,12 @@ export class LoopEngine extends EventEmitter {
     if (!needsVerdict) return { passed: exitOk, exitCode: agentResult.exitCode, outputTail: tail(agentResult.output) };
 
     const commandOk = commandResult ? commandResult.exitCode === 0 : true;
-    const passed = commandOk && verdict.verdict === "PASS";
+    // An agent that exited with an error cannot pass, whatever text it printed.
+    const passed = commandOk && exitOk && verdict.verdict === "PASS";
     const problems: string[] = [];
     if (commandResult && !commandOk) problems.push(`Test command failed (${describeExit(commandResult)}):\n${tail(commandResult.output, 4_000)}`);
-    if (!verdict.verdict) problems.push(`${agent} gave no VERDICT line (${describeExit(agentResult)}).`);
+    if (!exitOk) problems.push(`${agent} exited with an error (${describeExit(agentResult)}):\n${tail(agentResult.output, 2_000)}`);
+    else if (!verdict.verdict) problems.push(`${agent} gave no VERDICT line (${describeExit(agentResult)}).`);
     else if (verdict.verdict === "FAIL") problems.push(`${agent} verdict FAIL:\n${verdict.issues || "(no issues listed)"}`);
     return {
       passed, verdict: verdict.verdict, exitCode: commandResult?.exitCode ?? agentResult.exitCode,
@@ -567,6 +574,14 @@ export class LoopEngine extends EventEmitter {
     while (Buffer.byteLength(prompt, "utf8") > MAX_PROMPT_BYTES) prompt = prompt.slice(0, Math.floor(prompt.length * 0.9));
     return prompt;
   }
+}
+
+const QUOTA_PATTERN = /(usage limit|rate[ -]?limit|quota|too many requests|\b429\b|credit balance)/i;
+
+/** The first output line that says the agent ran out of quota, if any. */
+export function quotaMessage(output: string): string | undefined {
+  const line = output.split("\n").find((l) => QUOTA_PATTERN.test(l));
+  return line ? line.trim().slice(0, 300) : undefined;
 }
 
 function describeExit(result: ProcessResult): string {

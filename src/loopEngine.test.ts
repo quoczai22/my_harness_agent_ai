@@ -35,6 +35,8 @@ if (role === "implement") {
   const list = scenario[role + "Verdicts"] || ["PASS"];
   const verdict = list[Math.min(n - 1, list.length - 1)];
   if (verdict === "NONE") { console.log("I forgot the format"); process.exit(0); }
+  if (verdict === "ECHO") { console.log("End your answer with exactly these lines:\\nVERDICT: PASS or VERDICT: FAIL\\nISSUES:\\nERROR: the CLI crashed"); process.exit(1); }
+  if (verdict === "QUOTA") { console.log("ERROR: You've hit your usage limit. Try again at 2:21 PM."); process.exit(1); }
   console.log("Checked.\\nVERDICT: " + verdict + "\\nISSUES:\\n" + (verdict === "FAIL" ? "- login button does nothing" : ""));
 }
 `;
@@ -69,7 +71,7 @@ test("a task passes the default pipeline in one round and lands as a commit on t
     await t.engine.waitForIdle(run.id);
 
     const done = t.engine.getRun("ws", run.id);
-    assert.equal(done.status, "completed");
+    assert.equal(done.status, "completed", done.error);
     const state = t.engine.store("ws").read();
     assert.equal(state.tasks[0].status, "passed");
     assert.match(state.tasks[0].commit ?? "", /^[0-9a-f]{40}$/);
@@ -170,6 +172,40 @@ test("a missing verdict is asked once more, and a missing test command blocks wi
     assert.match(String(noCommand.engine.getRun("ws", run.id).error), /No test command is set/);
   } finally {
     noCommand.cleanup();
+  }
+});
+
+test("an agent that echoes the instructions and exits with an error never passes", async () => {
+  const t = setup({ testVerdicts: ["ECHO", "ECHO", "PASS"], reviewVerdicts: ["PASS"] });
+  try {
+    t.engine.addTasks("ws", [{ title: "Echo" }], "user");
+    const run = t.engine.startRun("ws", t.repo);
+    await t.engine.waitForIdle(run.id);
+    const events = t.engine.store("ws").readEvents(run.id);
+    const firstGate = events.find((e) => e.type === "stage-finished" && e.stageId === "test");
+    assert.equal(firstGate?.data?.passed, false);
+    assert.equal(firstGate?.data?.verdict, null);
+    assert.match(String(firstGate?.data?.issues), /exited with an error/);
+    assert.equal(t.engine.getRun("ws", run.id).status, "completed");
+    assert.deepEqual(t.counters(), { implement: 2, test: 3, review: 1 });
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("an agent out of quota blocks the task at once instead of spending rounds", async () => {
+  const t = setup({ testVerdicts: ["QUOTA"] });
+  try {
+    t.engine.addTasks("ws", [{ title: "Quota" }], "user");
+    const run = t.engine.startRun("ws", t.repo);
+    await t.engine.waitForIdle(run.id);
+    const task = t.engine.store("ws").read().tasks[0];
+    assert.equal(task.status, "blocked");
+    assert.equal(task.failedRounds, 0);
+    assert.deepEqual(t.counters(), { implement: 1, test: 1 });
+    assert.match(String(t.engine.getRun("ws", run.id).error), /out of quota or rate-limited: ERROR: You've hit your usage limit/);
+  } finally {
+    t.cleanup();
   }
 });
 
