@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { HarnessSession, WorkspaceSummary } from "./types.js";
 
 type StageKind = "context" | "agent" | "command" | "gate" | "human" | "commit";
-interface Stage { id: string; kind: StageKind; label?: string; agent?: string; role?: string; command?: string; onPass?: string; onFail?: string }
+interface Stage { id: string; kind: StageKind; label?: string; agent?: string; role?: string; command?: string; sources?: string[]; onPass?: string; onFail?: string }
 interface Pipeline { id: string; name: string; maxRounds: number; stages: Stage[] }
 interface StageResult { status: "waiting" | "running" | "passed" | "failed" | "skipped"; round: number; verdict?: string | null; exitCode?: number | null; issues?: string; outputTail?: string; at: string }
 interface LoopTask { id: string; title: string; description: string; allowedFiles: string[]; acceptance: string[]; status: string; failedRounds: number; commit?: string; lastIssues?: string; source: string }
@@ -20,10 +20,15 @@ interface Props {
 }
 
 const AGENT_LABEL: Record<string, string> = { claude: "Claude Code", codex: "Codex", antigravity: "Antigravity", lmstudio: "LM Studio", ollama: "Ollama", build: "Build", test: "Test" };
-const AGENT_GLYPH: Record<string, string> = { claude: "Cl", codex: "Cx", antigravity: "Ag", lmstudio: "LM", ollama: "Ol", command: ">_" };
+const AGENT_GLYPH: Record<string, string> = { claude: "CC", codex: "CX", antigravity: "AG", lmstudio: "LM", ollama: "OL" };
+const KIND_GLYPH: Record<StageKind, string> = { context: "DOC", agent: "AI", command: ">_", gate: "?", human: "YOU", commit: "GIT" };
+const ROLE_LABEL: Record<string, string> = { implement: "Làm", test: "Kiểm thử", review: "Duyệt", plan: "Lập kế hoạch" };
+const KIND_LABEL: Record<StageKind, string> = { context: "Tài liệu", agent: "Agent", command: "Lệnh", gate: "Cổng kiểm thử", human: "Bạn duyệt", commit: "Commit" };
 const TASK_STATUS: Record<string, string> = { proposal: "chờ duyệt", queued: "trong hàng đợi", running: "đang chạy", passed: "xong", blocked: "bị chặn", canceled: "đã bỏ" };
-const RUN_STATUS: Record<string, string> = { running: "đang chạy", paused: "tạm dừng", "waiting-human": "chờ bạn duyệt", blocked: "bị chặn", completed: "hoàn tất", canceled: "đã hủy", interrupted: "bị ngắt", failed: "lỗi" };
+const RUN_STATUS: Record<string, string> = { running: "Đang chạy", paused: "Tạm dừng", "waiting-human": "Chờ bạn duyệt", blocked: "Bị chặn", completed: "Hoàn tất", canceled: "Đã hủy", interrupted: "Bị ngắt", failed: "Lỗi" };
 const AVAILABILITY: Record<string, string> = { available: "sẵn sàng", authentication_required: "cần đăng nhập", offline: "offline", "not installed": "chưa cài", not_installed: "chưa cài" };
+const STAGE_STATUS: Record<string, string> = { waiting: "Chờ", running: "Đang chạy", passed: "Đạt", failed: "Trượt", skipped: "Bỏ qua" };
+const CHAT_SUGGESTIONS = ["Tóm tắt repo này giúp mình", "Bước tiếp theo nên làm gì?"];
 
 async function postJson(url: string, body: unknown = {}): Promise<any> {
   const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -32,9 +37,11 @@ async function postJson(url: string, body: unknown = {}): Promise<any> {
   return data;
 }
 
-const stageWho = (stage: Stage) => stage.agent ?? (stage.kind === "command" ? stage.command : stage.kind);
+const stageWho = (stage: Stage) => stage.agent ?? (stage.kind === "command" || stage.kind === "gate" ? stage.command : stage.kind);
 const stageTitle = (stage: Stage) => stage.label ?? `${AGENT_LABEL[stageWho(stage) ?? ""] ?? stage.id}`;
 const time = (iso: string) => new Date(iso).toLocaleTimeString();
+const firstLine = (text?: string) => (text ?? "").split("\n").find((line) => line.trim())?.trim() ?? "";
+const statusTone = (status?: string) => status === "completed" ? "pass" : status === "running" ? "run" : status === "blocked" || status === "failed" ? "fail" : status === "waiting-human" || status === "paused" || status === "interrupted" ? "warn" : "idle";
 
 export const LoopWorkspace: React.FC<Props> = ({ workspaces, workspaceId, onSelectWorkspace, onWorkspacesChanged, onError }) => {
   const q = `?workspace=${encodeURIComponent(workspaceId)}`;
@@ -48,7 +55,7 @@ export const LoopWorkspace: React.FC<Props> = ({ workspaces, workspaceId, onSele
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
   const [events, setEvents] = useState<LoopEvent[]>([]);
-  const [selectedStage, setSelectedStage] = useState("");
+  const [openStage, setOpenStage] = useState("");
   const [importMode, setImportMode] = useState<"" | "path" | "url">("");
   const [importValue, setImportValue] = useState("");
   const [importBusy, setImportBusy] = useState(false);
@@ -56,8 +63,12 @@ export const LoopWorkspace: React.FC<Props> = ({ workspaces, workspaceId, onSele
   const [showTaskForm, setShowTaskForm] = useState(false);
   const [commands, setCommands] = useState({ build: "", test: "" });
   const [pipelineText, setPipelineText] = useState("");
+  const [projectFiles, setProjectFiles] = useState<string[]>([]);
+  const [newSource, setNewSource] = useState("");
+  const [collapsed, setCollapsed] = useState(false);
   const chatAbort = useRef<AbortController | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
+  const messagesRef = useRef<HTMLDivElement | null>(null);
 
   const session = sessions.find((s) => s.id === sessionId);
 
@@ -85,12 +96,13 @@ export const LoopWorkspace: React.FC<Props> = ({ workspaces, workspaceId, onSele
   useEffect(() => {
     if (!workspaceId) return;
     setEvents([]);
-    setSelectedStage("");
+    setOpenStage("");
     Promise.all([loadSessions(), loadState()]).then(([, s]) => {
       setCommands({ build: s.commands.build ?? "", test: s.commands.test ?? "" });
       setPipelineText(JSON.stringify(s.pipeline, null, 2));
     }).catch((e) => onError(e.message));
-  }, [workspaceId, loadSessions, loadState, onError]);
+    fetch(`/api/project-index${q}`).then((r) => r.json()).then((data) => setProjectFiles((data.files ?? []).map((f: { path: string }) => f.path).slice(0, 2000))).catch(() => setProjectFiles([]));
+  }, [workspaceId, q, loadSessions, loadState, onError]);
 
   useEffect(() => {
     loadAgents().catch(() => undefined);
@@ -115,14 +127,18 @@ export const LoopWorkspace: React.FC<Props> = ({ workspaces, workspaceId, onSele
     return () => { clearTimeout(pending); source.close(); };
   }, [workspaceId, selectedRunId, q, loadState]);
 
-  useEffect(() => {
-    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [events.length]);
+  useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [events.length]);
+  useEffect(() => { if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight; }, [session?.messages?.length, liveReply]);
 
   const run = state?.runs.find((r) => r.id === selectedRunId);
   const pipeline = run?.pipeline ?? state?.pipeline;
+  const editablePipeline = state?.pipeline;
   const currentTask = state?.tasks.find((t) => t.id === run?.currentTaskId);
   const activeRun = Boolean(state?.activeRunId);
+  const queued = state?.tasks.filter((t) => t.status === "queued").length ?? 0;
+  const proposals = state?.tasks.filter((t) => t.status === "proposal") ?? [];
+  const workspace = workspaces.find((w) => w.id === workspaceId);
+  const agentById = (id?: string) => agents.find((a) => a.id === id);
 
   // ---- actions ----
 
@@ -135,20 +151,20 @@ export const LoopWorkspace: React.FC<Props> = ({ workspaces, workspaceId, onSele
     } catch (e: any) { onError(e.message); }
   };
 
-  const sendChat = async (propose = false) => {
+  const sendChat = async (options: { propose?: boolean; text?: string } = {}) => {
     if (!sessionId) return onError("Tạo hoặc chọn một session trước");
-    const message = chatInput.trim();
-    if (!propose && !message) return;
+    const message = (options.text ?? chatInput).trim();
+    if (!options.propose && !message) return;
     setChatBusy(true);
     setLiveReply("");
     setLiveTools([]);
-    if (!propose) setChatInput("");
+    if (!options.propose && options.text === undefined) setChatInput("");
     const controller = new AbortController();
     chatAbort.current = controller;
     try {
       const response = await fetch(`/api/loop/chat${q}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(propose ? { sessionId, propose: true } : { sessionId, message }), signal: controller.signal,
+        body: JSON.stringify(options.propose ? { sessionId, propose: true } : { sessionId, message }), signal: controller.signal,
       });
       if (!response.ok || !response.body) throw new Error((await response.json().catch(() => ({}))).error || "Claude Code không trả lời");
       const reader = response.body.getReader();
@@ -167,7 +183,7 @@ export const LoopWorkspace: React.FC<Props> = ({ workspaces, workspaceId, onSele
           if (event.type === "text") setLiveReply((current) => (current ? `${current}\n\n` : "") + event.text);
           if (event.type === "tool") setLiveTools((current) => [...current, event.name]);
           if (event.type === "error") onError(`Claude Code: ${event.message}`);
-          if (event.type === "done" && propose && event.proposals === 0) onError("Claude chưa trả về task nào hợp lệ. Hãy trao đổi rõ hơn rồi thử lại.");
+          if (event.type === "done" && options.propose && event.proposals === 0) onError("Claude chưa trả về task nào hợp lệ. Hãy trao đổi rõ hơn rồi thử lại.");
         }
       }
     } catch (e: any) {
@@ -213,30 +229,41 @@ export const LoopWorkspace: React.FC<Props> = ({ workspaces, workspaceId, onSele
   const startRun = () => act(async () => { const data = await postJson(`/api/loop/runs${q}`); setSelectedRunId(data.run.id); });
   const runAction = (action: string) => act(() => postJson(`/api/loop/runs/action${q}`, { runId: selectedRunId, action }));
   const saveCommands = () => act(() => postJson(`/api/loop/commands${q}`, commands));
-  const savePipeline = () => act(async () => {
-    let parsed: unknown;
-    try { parsed = JSON.parse(pipelineText); } catch { throw new Error("Pipeline không phải JSON hợp lệ"); }
-    await postJson(`/api/loop/pipeline${q}`, { pipeline: parsed });
+  const savePipelineValue = (value: unknown) => act(async () => {
+    const data = await postJson(`/api/loop/pipeline${q}`, { pipeline: value });
+    setPipelineText(JSON.stringify(data.pipeline, null, 2));
   });
+  const savePipeline = () => {
+    let parsed: unknown;
+    try { parsed = JSON.parse(pipelineText); } catch { return onError("Pipeline không phải JSON hợp lệ"); }
+    return savePipelineValue(parsed);
+  };
+
+  const contextStage = editablePipeline?.stages.find((s) => s.kind === "context");
+  const updateSources = (sources: string[]) => {
+    if (!editablePipeline || !contextStage) return;
+    savePipelineValue({ ...editablePipeline, stages: editablePipeline.stages.map((s) => (s.id === contextStage.id ? { ...s, sources } : s)) });
+  };
+  const addSource = () => {
+    const value = newSource.trim();
+    if (!value || !contextStage) return;
+    if ((contextStage.sources ?? []).includes(value)) return setNewSource("");
+    updateSources([...(contextStage.sources ?? []), value]);
+    setNewSource("");
+  };
 
   // ---- derived view data ----
 
-  const agentActivity = useMemo(() => {
-    const activity: Record<string, { doing?: string; last?: string; tone?: string }> = {};
-    if (!run || !pipeline) return activity;
-    for (const stage of pipeline.stages) {
-      const who = stage.agent ?? (stage.kind === "gate" || stage.kind === "command" ? stage.command : undefined);
-      if (!who) continue;
-      const result = run.stageResults[stage.id];
-      if (!result) continue;
-      const entry = (activity[who] ??= {});
-      if (result.status === "running" && (run.status === "running")) entry.doing = `${stageTitle(stage)} · vòng ${result.round}`;
-      else if (result.status === "passed") { entry.last = `${stageTitle(stage)}: đạt${result.verdict ? ` (${result.verdict})` : ""}`; entry.tone = "pass"; }
-      else if (result.status === "failed") { entry.last = `${stageTitle(stage)}: trượt vòng ${result.round}`; entry.tone = "fail"; }
-      if (stage.kind === "gate" && stage.agent && result.status === "running" && run.status === "running") (activity[stage.agent] ??= {}).doing = `${stageTitle(stage)} · vòng ${result.round}`;
+  // The stage whose failure sent the run back; cleared once that stage runs again.
+  const loopBack = useMemo(() => {
+    let failed: string | null = null;
+    for (const e of events) {
+      if (e.type === "round") failed = e.stageId ?? null;
+      else if (e.type === "stage-started" && e.stageId === failed) failed = null;
+      else if (e.type === "task-started" || e.type === "run-finished") failed = null;
     }
-    return activity;
-  }, [run, pipeline]);
+    return failed;
+  }, [events]);
 
   const logLines = useMemo(() => {
     const lines: Array<{ key: string; at: string; who: string; text: string; tone: string }> = [];
@@ -266,215 +293,281 @@ export const LoopWorkspace: React.FC<Props> = ({ workspaces, workspaceId, onSele
         warning: `⚠ ${d.message}`,
         "run-finished": `Run kết thúc: ${RUN_STATUS[d.status] ?? d.status}${d.reason ? ` · ${d.reason}` : ""}`,
       };
-      const tone = event.type === "stage-finished" ? (d.passed ? "pass" : "fail") : event.type === "task-blocked" || event.type === "warning" ? "warn" : "info";
+      const tone = event.type === "stage-finished" ? (d.passed ? "pass" : "fail") : event.type === "task-blocked" || event.type === "warning" || event.type === "round" ? "warn" : "info";
       lines.push({ key: `e${event.seq}`, at: event.at, who: event.agent ?? "", text: text[event.type] ?? event.type, tone });
     }
     return lines.slice(-300);
   }, [events, pipeline]);
 
-  const stageDetail = run && selectedStage ? run.stageResults[selectedStage] : undefined;
-  const queued = state?.tasks.filter((t) => t.status === "queued").length ?? 0;
-  const workspace = workspaces.find((w) => w.id === workspaceId);
+  const nodeDetail = (stage: Stage, result?: StageResult): string => {
+    if (stage.kind === "context") return `${stage.sources?.length ?? 0} nguồn tài liệu + AGENTS.md, README.md`;
+    if (stage.kind === "commit") return currentTask?.commit ? `commit ${currentTask.commit.slice(0, 10)}` : run ? `vào ${run.branch}` : "Harness commit vào nhánh riêng của run";
+    if (stage.kind === "human") return run?.status === "waiting-human" && run.currentStageId === stage.id ? "Đang chờ bạn bấm Duyệt hoặc Trả lại" : "Dừng lại để bạn duyệt";
+    if (result?.status === "failed") return firstLine(result.issues) || "Trượt";
+    if (result?.status === "passed") return result.verdict ? `VERDICT ${result.verdict}` : "Hoàn thành";
+    if (stage.kind === "gate") return `Lệnh: ${state?.commands[stage.command as "build" | "test"] ?? "chưa đặt"} + kết luận của ${AGENT_LABEL[stage.agent ?? ""] ?? stage.agent}`;
+    if (stage.kind === "command") return `Lệnh: ${state?.commands[stage.command as "build" | "test"] ?? "chưa đặt"}`;
+    const agent = agentById(stage.agent);
+    return agent ? `${agent.name} · ${AVAILABILITY[agent.status] ?? agent.status}` : "";
+  };
+
+  const gate = pipeline?.stages.find((s) => s.kind === "gate");
+  const pipelineAgents = new Set(pipeline?.stages.map((s) => s.agent).filter(Boolean));
+  const otherAgents = agents.filter((a) => !pipelineAgents.has(a.id));
+  const roundText = currentTask && pipeline && run && ["running", "paused", "waiting-human"].includes(run.status)
+    ? `Vòng ${Math.min(currentTask.failedRounds + 1, pipeline.maxRounds)}/${pipeline.maxRounds}` : null;
 
   return (
-    <section className="loop-grid">
-      <aside className="lp-panel lp-left">
-        <div className="lp-head"><span className="lp-eyebrow">Session</span><button className="lp-icon" onClick={createSession} aria-label="Tạo session">＋</button></div>
-        <div className="lp-list">
-          {sessions.length ? sessions.map((s) => (
-            <button key={s.id} className={`lp-row ${s.id === sessionId ? "active" : ""}`} onClick={() => setSessionId(s.id)}>
-              <strong>{s.title}</strong><small>{s.messageCount} tin nhắn · {new Date(s.updatedAt).toLocaleDateString()}</small>
-            </button>
-          )) : <p className="lp-empty">Tạo session đầu tiên để trò chuyện với Claude Code.</p>}
+    <section className={`lp2-grid ${collapsed ? "collapsed" : ""}`}>
+      {/* Left: sessions and repositories */}
+      <aside className="lp2-side">
+        <div className="lp2-side-top">
+          <button className="lp2-ghost lp2-icon" onClick={() => setCollapsed(!collapsed)} aria-label={collapsed ? "Mở rộng thanh bên" : "Thu gọn thanh bên"} title={collapsed ? "Mở rộng" : "Thu gọn"}>{collapsed ? "»" : "«"}</button>
+          {!collapsed && <button className="lp2-new" onClick={createSession}>＋ Cuộc trò chuyện mới</button>}
         </div>
-        <div className="lp-head"><span className="lp-eyebrow">Repo</span><button className="lp-icon" onClick={() => setImportMode(importMode ? "" : "path")} aria-label="Import repo">＋</button></div>
-        {importMode && (
-          <div className="lp-import">
-            <div className="lp-seg">
-              <button className={importMode === "path" ? "active" : ""} onClick={() => setImportMode("path")}>Thư mục</button>
-              <button className={importMode === "url" ? "active" : ""} onClick={() => setImportMode("url")}>Git URL</button>
+        {!collapsed && <>
+          <div className="lp2-label">Session</div>
+          <div className="lp2-list">
+            {sessions.length ? sessions.map((s) => (
+              <button key={s.id} className={`lp2-item ${s.id === sessionId ? "active" : ""}`} onClick={() => setSessionId(s.id)} title={s.title}>
+                <span className="lp2-item-title">{s.title}</span><span className="lp2-item-meta">{s.messageCount} tin · {new Date(s.updatedAt).toLocaleDateString()}</span>
+              </button>
+            )) : <p className="lp2-empty">Chưa có session.</p>}
+          </div>
+          <div className="lp2-label lp2-label-row"><span>Repo</span><button className="lp2-ghost lp2-icon" onClick={() => setImportMode(importMode ? "" : "path")} aria-label="Import repo" title="Import repo">＋</button></div>
+          {importMode && (
+            <div className="lp2-import">
+              <div className="lp2-seg" role="tablist">
+                <button role="tab" aria-selected={importMode === "path"} className={importMode === "path" ? "active" : ""} onClick={() => setImportMode("path")}>Thư mục</button>
+                <button role="tab" aria-selected={importMode === "url"} className={importMode === "url" ? "active" : ""} onClick={() => setImportMode("url")}>Git URL</button>
+              </div>
+              <input value={importValue} onChange={(e) => setImportValue(e.target.value)} placeholder={importMode === "url" ? "https://github.com/ten/repo.git" : "/home/kami/projects/my-app"} onKeyDown={(e) => { if (e.key === "Enter") importRepo(); }} aria-label={importMode === "url" ? "URL Git" : "Đường dẫn thư mục"} />
+              <button className="lp2-primary" onClick={importRepo} disabled={importBusy}>{importBusy ? "Đang import…" : importMode === "url" ? "Clone và thêm" : "Thêm repo"}</button>
             </div>
-            <input value={importValue} onChange={(e) => setImportValue(e.target.value)} placeholder={importMode === "url" ? "https://github.com/ten/repo.git" : "/home/kami/projects/my-app"} onKeyDown={(e) => { if (e.key === "Enter") importRepo(); }} />
-            <button className="lp-primary" onClick={importRepo} disabled={importBusy}>{importBusy ? "Đang import…" : importMode === "url" ? "Clone và thêm" : "Thêm repo"}</button>
+          )}
+          <div className="lp2-list">
+            {workspaces.map((w) => (
+              <button key={w.id} className={`lp2-item ${w.id === workspaceId ? "active" : ""}`} onClick={() => onSelectWorkspace(w.id)} disabled={w.status !== "ACTIVE"} title={w.path}>
+                <span className="lp2-item-title">{w.name}</span><span className="lp2-item-meta">{w.status === "ACTIVE" ? w.path : "không truy cập được"}</span>
+              </button>
+            ))}
+          </div>
+        </>}
+      </aside>
+
+      {/* Centre: the pipeline */}
+      <section className="lp2-main">
+        <header className="lp2-main-head">
+          <div className="lp2-title">
+            <h2>{workspace?.name ?? "Repo"}</h2>
+            <span className={`lp2-badge t-${statusTone(run?.status)}`}>{run ? RUN_STATUS[run.status] ?? run.status : "Chưa chạy"}</span>
+            {roundText && <span className="lp2-badge t-warn">{roundText}</span>}
+          </div>
+          <div className="lp2-actions">
+            {run?.status === "waiting-human" && <><button className="lp2-primary" onClick={() => runAction("approve")}>Duyệt</button><button onClick={() => runAction("reject")}>Trả lại</button></>}
+            {run?.status === "running" && <button onClick={() => runAction("pause")}>Tạm dừng</button>}
+            {run && ["paused", "blocked", "interrupted", "failed"].includes(run.status) && <button className="lp2-primary" onClick={() => runAction("resume")}>Tiếp tục</button>}
+            {run && ["running", "paused", "waiting-human"].includes(run.status) && <button className="lp2-danger" onClick={() => runAction("cancel")}>Hủy</button>}
+            {!activeRun && <button className="lp2-primary" onClick={startRun} disabled={!queued} title={queued ? "" : "Duyệt hoặc thêm task trước"}>▶ Chạy vòng lặp{queued ? ` (${queued} task)` : ""}</button>}
+          </div>
+        </header>
+
+        {run?.error && <div className="lp2-alert">{run.error}</div>}
+        {proposals.length > 0 && (
+          <div className="lp2-callout">
+            <span>Claude đề xuất {proposals.length} task. Xem bên dưới rồi duyệt để đưa vào hàng đợi.</span>
+            <button className="lp2-primary" onClick={() => setTaskStatus(proposals.map((t) => t.id), "queued")}>Duyệt tất cả</button>
           </div>
         )}
-        <div className="lp-list">
-          {workspaces.map((w) => (
-            <button key={w.id} className={`lp-row ${w.id === workspaceId ? "active" : ""}`} onClick={() => onSelectWorkspace(w.id)} disabled={w.status !== "ACTIVE"} title={w.path}>
-              <strong>{w.name}</strong><small>{w.status === "ACTIVE" ? w.path : "không truy cập được"}</small>
-            </button>
-          ))}
-        </div>
-      </aside>
 
-      <section className="lp-panel lp-chat">
-        <div className="lp-head"><span className="lp-eyebrow">Chat với Claude Code · {workspace?.name ?? ""}</span><span className="lp-note">chỉ đọc, không sửa file</span></div>
-        <div className="lp-messages" aria-live="polite">
-          {session?.messages?.length || chatBusy ? (
-            <>
-              {(session?.messages ?? []).map((m) => (
-                <article key={m.id} className={`lp-msg ${m.role === "user" ? "me" : "ai"} ${m.error ? "err" : ""}`}>
-                  <div className="lp-msg-meta">{m.role === "user" ? "Bạn" : m.provider === "claude" ? "Claude Code" : m.provider ?? "Harness"} · {time(m.createdAt)}</div>
-                  <p>{m.content.replace(/```json[\s\S]*?```/g, "[Danh sách task đã chuyển xuống ô Task để bạn duyệt]")}</p>
-                </article>
-              ))}
-              {chatBusy && (
-                <article className="lp-msg ai live">
-                  <div className="lp-msg-meta">Claude Code · đang trả lời{liveTools.length ? ` · đã dùng ${[...new Set(liveTools)].join(", ")}` : ""}</div>
-                  <p>{liveReply || "…"}</p>
-                </article>
-              )}
-            </>
-          ) : <p className="lp-empty">{session ? "Mô tả việc bạn muốn làm. Khi đã rõ, bấm “Chia thành task” để Claude đề xuất task cho vòng lặp." : "Chọn hoặc tạo một session."}</p>}
-        </div>
-        <div className="lp-composer">
-          <textarea value={chatInput} onChange={(e) => setChatInput(e.target.value)} rows={3} placeholder="Nhắn cho Claude Code…" disabled={chatBusy || !session}
-            onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) sendChat(); }} />
-          <div className="lp-actions">
-            <button onClick={() => sendChat(true)} disabled={chatBusy || !session}>Chia thành task</button>
-            {chatBusy ? <button className="lp-danger" onClick={() => chatAbort.current?.abort()}>Dừng</button>
-              : <button className="lp-primary" onClick={() => sendChat()} disabled={!session || !chatInput.trim()}>Gửi</button>}
-          </div>
-        </div>
-      </section>
-
-      <aside className="lp-panel lp-agents">
-        <div className="lp-head"><span className="lp-eyebrow">Các ô agent</span><button className="lp-icon" onClick={() => loadAgents()} aria-label="Kiểm tra lại">↻</button></div>
-        {agents.map((agent) => {
-          const activity = agentActivity[agent.id] ?? {};
-          return (
-            <article key={agent.id} className={`lp-agent ${activity.doing ? "busy" : ""}`}>
-              <div className={`lp-glyph g-${agent.id}`}>{AGENT_GLYPH[agent.id] ?? agent.id.slice(0, 2)}</div>
-              <div className="lp-agent-body">
-                <strong>{agent.name}</strong>
-                <small className={`lp-avail a-${agent.status.replace(/\s/g, "_")}`}>{AVAILABILITY[agent.status] ?? agent.status}</small>
-                <small>{activity.doing ? `Đang làm: ${activity.doing}` : activity.last ?? agent.detail}</small>
-              </div>
-              {activity.doing ? <span className="lp-pulse" aria-label="đang chạy" /> : activity.tone ? <span className={`lp-dot ${activity.tone}`} /> : null}
-            </article>
-          );
-        })}
-        {(["build", "test"] as const).map((key) => {
-          const activity = agentActivity[key] ?? {};
-          return (
-            <article key={key} className={`lp-agent ${activity.doing ? "busy" : ""}`}>
-              <div className="lp-glyph g-command">&gt;_</div>
-              <div className="lp-agent-body"><strong>{key === "build" ? "Lệnh build" : "Lệnh test"}</strong>
-                <small className="lp-mono">{state?.commands[key] ?? "chưa đặt"}</small>
-                {(activity.doing || activity.last) && <small>{activity.doing ? `Đang chạy: ${activity.doing}` : activity.last}</small>}</div>
-              {activity.doing ? <span className="lp-pulse" /> : activity.tone ? <span className={`lp-dot ${activity.tone}`} /> : null}
-            </article>
-          );
-        })}
-      </aside>
-
-      <section className="lp-panel lp-pipeline">
-        <div className="lp-head">
-          <span className="lp-eyebrow">
-            Pipeline · {pipeline?.name ?? ""}
-            {run && <> · run {RUN_STATUS[run.status] ?? run.status}</>}
-            {currentTask && pipeline && <> · vòng {Math.min(currentTask.failedRounds + 1, pipeline.maxRounds)} / tối đa {pipeline.maxRounds}</>}
-          </span>
-          <div className="lp-actions">
+        <section className="lp2-card">
+          <div className="lp2-card-head">
+            <h3>{pipeline?.name ?? "Pipeline"}</h3>
             {state && state.runs.length > 0 && (
               <select value={selectedRunId} onChange={(e) => setSelectedRunId(e.target.value)} aria-label="Chọn run">
                 {state.runs.map((r) => <option key={r.id} value={r.id}>{new Date(r.createdAt).toLocaleString()} · {RUN_STATUS[r.status] ?? r.status}</option>)}
               </select>
             )}
-            {run?.status === "running" && <button onClick={() => runAction("pause")}>Tạm dừng</button>}
-            {run && ["paused", "blocked", "interrupted", "failed"].includes(run.status) && <button onClick={() => runAction("resume")}>Tiếp tục</button>}
-            {run?.status === "waiting-human" && <><button className="lp-primary" onClick={() => runAction("approve")}>Duyệt</button><button onClick={() => runAction("reject")}>Trả lại</button></>}
-            {run && ["running", "paused", "waiting-human"].includes(run.status) && <button className="lp-danger" onClick={() => runAction("cancel")}>Hủy</button>}
-            {!activeRun && <button className="lp-primary" onClick={startRun} disabled={!queued}>Chạy vòng lặp ({queued})</button>}
           </div>
-        </div>
-
-        {pipeline && (
-          <div className="lp-stages" role="list">
-            {pipeline.stages.map((stage, i) => {
+          {currentTask && <p className="lp2-current">Task đang làm: <strong>{currentTask.title}</strong></p>}
+          <ol className="lp2-flow">
+            {pipeline?.stages.map((stage, index) => {
               const result = run?.stageResults[stage.id];
               const status = result?.status ?? "waiting";
               const back = stage.onFail ? pipeline.stages.find((s) => s.id === stage.onFail) : undefined;
+              const isBackward = back ? pipeline.stages.indexOf(back) < index : false;
+              const agent = agentById(stage.agent);
+              const open = openStage === stage.id;
+              const looping = loopBack === stage.id && run?.status === "running";
               return (
-                <React.Fragment key={stage.id}>
-                  <button role="listitem" className={`lp-stage s-${status} ${selectedStage === stage.id ? "selected" : ""} ${run?.currentStageId === stage.id && run.status !== "completed" ? "current" : ""}`} onClick={() => setSelectedStage(selectedStage === stage.id ? "" : stage.id)}>
-                    <span className="lp-stage-who">{AGENT_LABEL[stageWho(stage) ?? ""] ?? stage.kind}</span>
-                    <strong>{stageTitle(stage)}</strong>
-                    <small>{status === "waiting" ? "chờ" : status === "running" ? `đang chạy · vòng ${result?.round}` : status === "passed" ? "đạt" : status === "failed" ? `trượt vòng ${result?.round}` : status}</small>
-                    {back && <small className="lp-back">trượt → {stageTitle(back)}</small>}
+                <li key={stage.id} className="lp2-flow-item">
+                  <button className={`lp2-node s-${status} ${run?.currentStageId === stage.id && run.status !== "completed" ? "current" : ""}`} onClick={() => setOpenStage(open ? "" : stage.id)} aria-expanded={open}>
+                    <span className={`lp2-glyph g-${stage.agent ?? stage.kind}`}>{stage.agent ? AGENT_GLYPH[stage.agent] ?? stage.agent.slice(0, 2).toUpperCase() : KIND_GLYPH[stage.kind]}</span>
+                    <span className="lp2-node-body">
+                      <span className="lp2-node-title">{stageTitle(stage)} <span className="lp2-role">{stage.role ? ROLE_LABEL[stage.role] ?? stage.role : KIND_LABEL[stage.kind]}</span></span>
+                      <span className="lp2-node-detail">{nodeDetail(stage, result)}</span>
+                    </span>
+                    {agent && agent.status !== "available" && <span className="lp2-warn-chip" title={agent.detail}>{AVAILABILITY[agent.status] ?? agent.status}</span>}
+                    <span className={`lp2-pill p-${status}`}>{STAGE_STATUS[status] ?? status}{result && result.round > 1 ? ` · v${result.round}` : ""}</span>
                   </button>
-                  {i < pipeline.stages.length - 1 && <span className="lp-arrow" aria-hidden="true">→</span>}
-                </React.Fragment>
+                  {open && (
+                    <div className="lp2-node-open">
+                      {result ? <>
+                        <div className="lp2-mini">Vòng {result.round}{result.verdict ? ` · VERDICT ${result.verdict}` : ""}{result.exitCode !== undefined && result.exitCode !== null ? ` · exit ${result.exitCode}` : ""} · {time(result.at)}</div>
+                        {result.issues && <pre className="lp2-pre fail">{result.issues}</pre>}
+                        {result.outputTail && <pre className="lp2-pre">{result.outputTail}</pre>}
+                      </> : <div className="lp2-mini">Bước này chưa chạy trong run đang xem.</div>}
+                      {agent && <div className="lp2-mini">{agent.name}: {agent.detail}</div>}
+                    </div>
+                  )}
+                  {index < pipeline.stages.length - 1 && (
+                    <div className="lp2-connector">
+                      <span className={`lp2-vline ${status === "passed" ? "done" : ""}`} aria-hidden="true" />
+                      {back && isBackward && <span className={`lp2-loopback ${looping ? "active" : ""}`}>↺ Nếu trượt: quay lại {stageTitle(back)}</span>}
+                    </div>
+                  )}
+                  {index === pipeline.stages.length - 1 && back && isBackward && <div className="lp2-connector"><span className={`lp2-loopback ${looping ? "active" : ""}`}>↺ Nếu trả lại: quay lại {stageTitle(back)}</span></div>}
+                </li>
               );
             })}
-          </div>
-        )}
-        {run?.error && <p className="lp-warn">{run.error}</p>}
-        {stageDetail && (
-          <div className="lp-detail">
-            <strong>{pipeline?.stages.find((s) => s.id === selectedStage)?.label ?? selectedStage}</strong> · vòng {stageDetail.round}
-            {stageDetail.verdict && <> · VERDICT {stageDetail.verdict}</>}
-            {stageDetail.exitCode !== undefined && stageDetail.exitCode !== null && <> · exit {stageDetail.exitCode}</>}
-            {stageDetail.issues && <pre className="lp-pre fail">{stageDetail.issues}</pre>}
-            {stageDetail.outputTail && <pre className="lp-pre">{stageDetail.outputTail}</pre>}
-          </div>
-        )}
+          </ol>
+          {gate && pipeline && (
+            <div className="lp2-rules">
+              <div className="lp2-rule fail"><strong>Nếu {stageTitle(gate)} trượt</strong><span>Lỗi được gửi kèm cho {stageTitle(pipeline.stages.find((s) => s.id === gate.onFail) ?? gate)} sửa tiếp. Trượt {pipeline.maxRounds} vòng thì dừng chờ bạn.</span></div>
+              <div className="lp2-rule pass"><strong>Nếu đạt</strong><span>Chỉ đạt khi lệnh test thoát mã 0 và {AGENT_LABEL[gate.agent ?? ""] ?? gate.agent} kết luận PASS. Sau đó sang {stageTitle(pipeline.stages.find((s) => s.id === gate.onPass) ?? gate)}.</span></div>
+            </div>
+          )}
+          {otherAgents.length > 0 && (
+            <div className="lp2-others">
+              <span>Agent khác:</span>
+              {otherAgents.map((a) => <span key={a.id} className={`lp2-chip a-${a.status.replace(/\s/g, "_")}`} title={a.detail}>{a.name} · {AVAILABILITY[a.status] ?? a.status}</span>)}
+              <button className="lp2-ghost" onClick={() => loadAgents()}>Kiểm tra lại</button>
+            </div>
+          )}
+        </section>
 
-        <div className="lp-split">
-          <div className="lp-tasks">
-            <div className="lp-subhead"><span>Task</span><button onClick={() => setShowTaskForm(!showTaskForm)}>{showTaskForm ? "Đóng" : "＋ Thêm task"}</button></div>
-            {showTaskForm && (
-              <div className="lp-taskform">
-                <input value={taskForm.title} onChange={(e) => setTaskForm({ ...taskForm, title: e.target.value })} placeholder="Tiêu đề task, ví dụ: Trang đăng nhập" />
-                <input value={taskForm.files} onChange={(e) => setTaskForm({ ...taskForm, files: e.target.value })} placeholder="File được sửa, ví dụ: src/ui/**, src/styles.css (bỏ trống = không giới hạn)" />
-                <textarea value={taskForm.acceptance} onChange={(e) => setTaskForm({ ...taskForm, acceptance: e.target.value })} rows={2} placeholder="Tiêu chí nghiệm thu, mỗi dòng một tiêu chí" />
-                <button className="lp-primary" onClick={addTask}>Thêm vào hàng đợi</button>
-              </div>
-            )}
+        <section className="lp2-card">
+          <div className="lp2-card-head">
+            <h3>Task</h3>
+            <button onClick={() => setShowTaskForm(!showTaskForm)}>{showTaskForm ? "Đóng" : "＋ Thêm task"}</button>
+          </div>
+          {showTaskForm && (
+            <div className="lp2-form">
+              <input value={taskForm.title} onChange={(e) => setTaskForm({ ...taskForm, title: e.target.value })} placeholder="Tiêu đề, ví dụ: Trang đăng nhập" aria-label="Tiêu đề task" />
+              <input value={taskForm.files} onChange={(e) => setTaskForm({ ...taskForm, files: e.target.value })} placeholder="File được sửa, ví dụ: src/ui/**, src/styles.css (trống = không giới hạn)" aria-label="File được sửa" />
+              <textarea value={taskForm.acceptance} onChange={(e) => setTaskForm({ ...taskForm, acceptance: e.target.value })} rows={2} placeholder="Tiêu chí nghiệm thu, mỗi dòng một tiêu chí" aria-label="Tiêu chí nghiệm thu" />
+              <button className="lp2-primary" onClick={addTask}>Thêm vào hàng đợi</button>
+            </div>
+          )}
+          <div className="lp2-tasks">
             {state?.tasks.length ? state.tasks.slice().reverse().map((task) => (
-              <article key={task.id} className={`lp-task t-${task.status}`}>
-                <div><strong>{task.title}</strong><span className="lp-chip">{TASK_STATUS[task.status] ?? task.status}</span>{task.source === "claude" && <span className="lp-chip ghost">Claude đề xuất</span>}</div>
-                {task.allowedFiles.length > 0 && <small className="lp-mono">{task.allowedFiles.join(", ")}</small>}
-                {task.acceptance.length > 0 && <small>{task.acceptance.join(" · ")}</small>}
-                {task.status === "blocked" && task.lastIssues && <small className="lp-warn">{task.lastIssues}</small>}
-                {task.commit && <small className="lp-mono">commit {task.commit.slice(0, 10)}</small>}
-                <div className="lp-task-actions">
-                  {task.status === "proposal" && <><button className="lp-primary" onClick={() => setTaskStatus([task.id], "queued")}>Duyệt</button><button onClick={() => setTaskStatus([task.id], "canceled")}>Bỏ</button></>}
-                  {(task.status === "canceled" || task.status === "blocked") && !activeRun && <button onClick={() => setTaskStatus([task.id], "queued")}>Đưa lại hàng đợi</button>}
-                  {task.status === "queued" && <button onClick={() => setTaskStatus([task.id], "canceled")}>Bỏ</button>}
+              <article key={task.id} className={`lp2-task t-${task.status}`}>
+                <div className="lp2-task-top">
+                  <strong>{task.title}</strong>
+                  <span className={`lp2-chip s-${task.status}`}>{TASK_STATUS[task.status] ?? task.status}</span>
+                  {task.source === "claude" && <span className="lp2-chip ghost">Claude đề xuất</span>}
+                  <span className="lp2-task-actions">
+                    {task.status === "proposal" && <><button className="lp2-primary" onClick={() => setTaskStatus([task.id], "queued")}>Duyệt</button><button onClick={() => setTaskStatus([task.id], "canceled")}>Bỏ</button></>}
+                    {(task.status === "canceled" || task.status === "blocked") && !activeRun && <button onClick={() => setTaskStatus([task.id], "queued")}>Đưa lại hàng đợi</button>}
+                    {task.status === "queued" && <button className="lp2-ghost" onClick={() => setTaskStatus([task.id], "canceled")}>Bỏ</button>}
+                  </span>
                 </div>
+                {task.description && <p className="lp2-task-desc">{task.description}</p>}
+                {task.acceptance.length > 0 && <ul className="lp2-accept">{task.acceptance.map((a) => <li key={a}>{a}</li>)}</ul>}
+                <div className="lp2-task-meta">
+                  {task.allowedFiles.length > 0 && <span className="lp2-mono">{task.allowedFiles.join(", ")}</span>}
+                  {task.failedRounds > 0 && <span>đã trượt {task.failedRounds} vòng</span>}
+                  {task.commit && <span className="lp2-mono">commit {task.commit.slice(0, 10)}</span>}
+                </div>
+                {task.status === "blocked" && task.lastIssues && <p className="lp2-alert small">{task.lastIssues}</p>}
               </article>
-            )) : <p className="lp-empty">Chưa có task. Trao đổi với Claude rồi bấm “Chia thành task”, hoặc thêm task bằng tay.</p>}
-            {state?.tasks.some((t) => t.status === "proposal") && (
-              <button className="lp-primary lp-wide" onClick={() => setTaskStatus(state.tasks.filter((t) => t.status === "proposal").map((t) => t.id), "queued")}>Duyệt tất cả đề xuất</button>
-            )}
+            )) : <p className="lp2-empty">Chưa có task. Trao đổi với Claude ở khung bên phải rồi bấm “Chia thành task”, hoặc thêm task bằng tay.</p>}
           </div>
+        </section>
 
-          <div className="lp-log" ref={logRef} aria-live="polite">
-            <div className="lp-subhead"><span>Nhật ký run</span>{run && <span className="lp-mono">{run.branch}</span>}</div>
-            {logLines.length ? logLines.map((line) => (
-              <div key={line.key} className={`lp-line l-${line.tone}`}>
-                <time>{time(line.at)}</time>
-                {line.who && <span className="lp-who">{AGENT_LABEL[line.who] ?? line.who}</span>}
-                <pre>{line.tone === "output" ? line.text.slice(-4000) : line.text}</pre>
+        <div className="lp2-two">
+          <section className="lp2-card">
+            <div className="lp2-card-head"><h3>Repo và nhánh</h3></div>
+            <div className="lp2-field"><span>Thư mục</span><code className="lp2-mono">{workspace?.path}</code></div>
+            <div className="lp2-field"><span>Nhánh của run</span><code className="lp2-mono">{run?.branch ?? "tạo khi bấm Chạy vòng lặp"}</code></div>
+            <label className="lp2-field"><span>Lệnh test</span><input className="lp2-mono" value={commands.test} onChange={(e) => setCommands({ ...commands, test: e.target.value })} placeholder="npm test" /></label>
+            <label className="lp2-field"><span>Lệnh build</span><input className="lp2-mono" value={commands.build} onChange={(e) => setCommands({ ...commands, build: e.target.value })} placeholder="npm run build" /></label>
+            <div className="lp2-actions"><button onClick={saveCommands}>Lưu lệnh</button></div>
+            <p className="lp2-hint">Agent chỉ ghi file trong nhánh riêng của run. Repo của bạn không bị sửa; bạn tự merge nhánh khi thấy ổn.</p>
+          </section>
+          <section className="lp2-card">
+            <div className="lp2-card-head"><h3>Tài liệu context</h3><span className="lp2-hint">{(contextStage?.sources ?? []).length} nguồn</span></div>
+            {contextStage ? <>
+              <ul className="lp2-sources">
+                {(contextStage.sources ?? []).map((source) => (
+                  <li key={source}><span className="lp2-mono">{source}</span><button className="lp2-ghost lp2-icon" onClick={() => updateSources((contextStage.sources ?? []).filter((s) => s !== source))} aria-label={`Bỏ ${source}`}>×</button></li>
+                ))}
+              </ul>
+              <div className="lp2-inline">
+                <input list="lp2-files" value={newSource} onChange={(e) => setNewSource(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addSource(); }} placeholder="Thêm file hoặc thư mục, ví dụ docs/" aria-label="Thêm tài liệu context" />
+                <datalist id="lp2-files">{projectFiles.map((f) => <option key={f} value={f} />)}</datalist>
+                <button onClick={addSource}>Thêm</button>
               </div>
-            )) : <p className="lp-empty">Chưa có run nào. Duyệt task rồi bấm “Chạy vòng lặp”.</p>}
-          </div>
+              <p className="lp2-hint">AGENTS.md và README.md luôn được gửi kèm. File bí mật như .env bị lọc.</p>
+            </> : <p className="lp2-empty">Pipeline này không có bước tài liệu context.</p>}
+          </section>
         </div>
 
-        <details className="lp-settings">
-          <summary>Cài đặt pipeline và lệnh</summary>
-          <div className="lp-settings-grid">
-            <label>Lệnh build<input className="lp-mono" value={commands.build} onChange={(e) => setCommands({ ...commands, build: e.target.value })} placeholder="npm run build" /></label>
-            <label>Lệnh test<input className="lp-mono" value={commands.test} onChange={(e) => setCommands({ ...commands, test: e.target.value })} placeholder="npm test" /></label>
-            <button onClick={saveCommands}>Lưu lệnh</button>
-          </div>
-          <label className="lp-pipeline-edit">Pipeline (JSON)
-            <textarea className="lp-mono" rows={12} value={pipelineText} onChange={(e) => setPipelineText(e.target.value)} spellCheck={false} />
-          </label>
-          <div className="lp-actions"><button onClick={savePipeline}>Lưu pipeline</button><span className="lp-note">Loại bước: context, agent, command, gate, human, commit. Agent: claude, codex, antigravity, lmstudio, ollama.</span></div>
+        <details className="lp2-card lp2-advanced">
+          <summary>Nâng cao: sửa pipeline (JSON)</summary>
+          <textarea className="lp2-mono" rows={14} value={pipelineText} onChange={(e) => setPipelineText(e.target.value)} spellCheck={false} aria-label="Pipeline JSON" />
+          <div className="lp2-actions"><span className="lp2-hint">Loại bước: context, agent, command, gate, human, commit. Agent: claude, codex, antigravity, lmstudio, ollama.</span><button onClick={savePipeline}>Lưu pipeline</button></div>
         </details>
       </section>
+
+      {/* Right: chat with Claude Code and the run log */}
+      <aside className="lp2-right">
+        <section className="lp2-chat">
+          <header className="lp2-chat-head">
+            <span className="lp2-glyph g-claude">CC</span>
+            <div><strong>Claude Code</strong><span className="lp2-hint">AI chính · chỉ đọc, không sửa file</span></div>
+            <span className={`lp2-dot ${agentById("claude")?.status === "available" ? "ok" : "bad"}`} title={agentById("claude")?.detail} />
+          </header>
+          <div className="lp2-messages" ref={messagesRef} aria-live="polite">
+            {!session && <p className="lp2-empty">Tạo một cuộc trò chuyện ở thanh bên trái để bắt đầu.</p>}
+            {session && !session.messages?.length && !chatBusy && <p className="lp2-empty">Mô tả việc bạn muốn làm với repo này. Khi đã rõ, bấm “Chia thành task” để Claude đề xuất task cho vòng lặp.</p>}
+            {(session?.messages ?? []).map((m) => (
+              <article key={m.id} className={`lp2-msg ${m.role === "user" ? "me" : "ai"} ${m.error ? "err" : ""}`}>
+                <div className="lp2-msg-meta">{m.role === "user" ? "Bạn" : m.provider === "claude" ? "Claude Code" : m.provider ?? "Harness"} · {time(m.createdAt)}</div>
+                <p>{m.content.replace(/```json[\s\S]*?```/g, "[Danh sách task đã chuyển vào ô Task để bạn duyệt]")}</p>
+              </article>
+            ))}
+            {chatBusy && (
+              <article className="lp2-msg ai live">
+                <div className="lp2-msg-meta">Claude Code · đang trả lời{liveTools.length ? ` · đã dùng ${[...new Set(liveTools)].join(", ")}` : ""}</div>
+                <p>{liveReply || "…"}</p>
+              </article>
+            )}
+          </div>
+          <div className="lp2-suggest">
+            <button className="lp2-chip-btn strong" onClick={() => sendChat({ propose: true })} disabled={chatBusy || !session}>Chia thành task</button>
+            {CHAT_SUGGESTIONS.map((s) => <button key={s} className="lp2-chip-btn" onClick={() => sendChat({ text: s })} disabled={chatBusy || !session}>{s}</button>)}
+          </div>
+          <div className="lp2-composer">
+            <textarea value={chatInput} onChange={(e) => setChatInput(e.target.value)} rows={2} placeholder={session ? "Nhắn cho Claude Code… (Ctrl+Enter để gửi)" : "Chọn một cuộc trò chuyện trước"} disabled={chatBusy || !session}
+              onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) sendChat(); }} aria-label="Tin nhắn cho Claude Code" />
+            {chatBusy ? <button className="lp2-danger" onClick={() => chatAbort.current?.abort()}>Dừng</button>
+              : <button className="lp2-primary" onClick={() => sendChat()} disabled={!session || !chatInput.trim()}>Gửi</button>}
+          </div>
+        </section>
+        <section className="lp2-log">
+          <header className="lp2-log-head"><span>&gt;_ Nhật ký run</span>{run && <span className="lp2-mono">{run.branch}</span>}</header>
+          <div className="lp2-log-body" ref={logRef} aria-live="polite">
+            {logLines.length ? logLines.map((line) => (
+              <div key={line.key} className={`lp2-line l-${line.tone}`}>
+                <time>{time(line.at)}</time>
+                {line.who && <span className="lp2-who">{AGENT_LABEL[line.who] ?? line.who}</span>}
+                <pre>{line.tone === "output" ? line.text.slice(-4000) : line.text}</pre>
+              </div>
+            )) : <p className="lp2-empty">Chưa có run nào. Duyệt task rồi bấm “Chạy vòng lặp”.</p>}
+          </div>
+        </section>
+      </aside>
     </section>
   );
 };
