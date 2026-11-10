@@ -19,6 +19,7 @@ import {
   THEME_STORAGE_KEY,
   ThemePreference,
 } from "./theme.js";
+import { LoopWorkspace } from "./LoopWorkspace.js";
 
 const MODE_LABELS: Record<OrchestrationMode, string> = {
   auto: "Auto route",
@@ -30,6 +31,7 @@ const MODE_LABELS: Record<OrchestrationMode, string> = {
   antigravity_writes_codex_reviews: "Antigravity writes · Codex reviews",
 };
 
+type Page = "loop" | "atlas";
 type View = "project-flow" | "harness-flow" | "code" | "relationships" | "changes";
 
 const formatBytes = (bytes: number) => {
@@ -90,6 +92,7 @@ export const App: React.FC = () => {
   const [showPathEntry, setShowPathEntry] = useState(false);
   const [pathInput, setPathInput] = useState("");
   const [error, setError] = useState("");
+  const [page, setPage] = useState<Page>("loop");
 
   const workspaceQuery = workspaceId ? `?workspace=${encodeURIComponent(workspaceId)}` : "";
   const activeSession = sessions.find((session) => session.id === activeSessionId);
@@ -381,6 +384,10 @@ export const App: React.FC = () => {
           {showPathEntry && <div className="path-entry"><input aria-label="Đường dẫn workspace" value={pathInput} onChange={(event) => setPathInput(event.target.value)} placeholder="D:\\Projects\\my-project" /><button onClick={registerPath}>Add</button></div>}
         </div>
         <div className="topbar-meta">
+          <nav className="page-switch" aria-label="Trang">
+            <button className={page === "loop" ? "active" : ""} onClick={() => setPage("loop")} aria-pressed={page === "loop"}>Vòng lặp agent</button>
+            <button className={page === "atlas" ? "active" : ""} onClick={() => setPage("atlas")} aria-pressed={page === "atlas"}>Code atlas</button>
+          </nav>
           <span className="live-dot" /><span>Loopback only</span>
           <div className="theme-switcher" role="group" aria-label="Giao diện sáng tối">
             {(["light", "dark", "system"] as ThemePreference[]).map((theme) => (
@@ -394,7 +401,18 @@ export const App: React.FC = () => {
 
       {error && <div className="error-banner" role="alert"><span>{error}</span><button onClick={() => setError("")} aria-label="Đóng lỗi">×</button></div>}
 
-      <section className="workspace-grid">
+      {page === "loop" && workspaceId && (
+        <LoopWorkspace
+          workspaces={workspaces}
+          workspaceId={workspaceId}
+          onSelectWorkspace={setWorkspaceId}
+          onWorkspacesChanged={loadWorkspaces}
+          onError={setError}
+        />
+      )}
+      {page === "loop" && !workspaceId && <div className="empty-state">Chưa có repo nào. Thêm repo bằng ô chọn project phía trên.</div>}
+
+      {page === "atlas" && <section className="workspace-grid">
         <aside className="panel explorer-panel">
           <div className="panel-heading"><div><span className="eyebrow">PROJECT MAP</span><h2>{index?.rootName ?? selectedWorkspace?.name ?? "Workspace"}</h2></div><span className="count-pill">{index?.totalFiles ?? 0}</span></div>
           <label className="search-box"><span aria-hidden="true">⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search files or language" /></label>
@@ -460,7 +478,7 @@ export const App: React.FC = () => {
           <div className="chat-history" aria-live="polite">{activeSession?.messages?.length ? activeSession.messages.map((message) => <article key={message.id} className={`chat-message message-${message.role}`}><div><strong>{message.role === "user" ? "You" : message.provider === "antigravity" ? "Antigravity" : "Harness"}</strong><time>{new Date(message.createdAt).toLocaleTimeString()}</time></div><p>{message.content}</p>{message.usage?.total_tokens && <small>{message.usage.total_tokens.toLocaleString()} tokens</small>}</article>) : <div className="empty-state compact">Session chưa có tin nhắn.</div>}</div>
           <div className="composer"><div className="context-badges"><span>{selectedPaths.length} files</span><span>{index?.technologies.length ?? 0} signals</span></div><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Ask Antigravity about this project…" rows={4} disabled={agentBusy} /><div className="composer-actions"><button className="secondary-button" onClick={prepareContext} disabled={agentBusy}>Preview context</button>{agentBusy ? <button className="danger-button" onClick={cancelAntigravity}>Cancel</button> : <button className="primary-button" onClick={sendToAntigravity}>Send to Antigravity <span>→</span></button>}</div>{contextSummary && <p className="context-summary">✓ {contextSummary}</p>}<small className="composer-note">Explicit send only · sandboxed plan mode · proposals are read-only.</small></div>
         </aside>
-      </section>
+      </section>}
     </main>
   );
 };

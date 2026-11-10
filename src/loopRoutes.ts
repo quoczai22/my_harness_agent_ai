@@ -7,7 +7,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 import { chatCommand, extractTaskProposals, runClaudeChat, TASK_PROPOSAL_INSTRUCTIONS } from "./claudeChat.js";
 import type { LoopEngine } from "./loopEngine.js";
 import type { LoopEvent } from "./loopStore.js";
@@ -71,7 +71,9 @@ async function agentAvailability(engine: LoopEngine) {
   const providers = await discoverProviderStates();
   const config = engine.agentConfig();
   const claudeCmd = config.agents.claude?.cmd?.[0] ?? "claude";
-  const which = (command: string) => (process.env.PATH ?? "").split(":").some((dir) => dir && existsSync(join(dir, command)));
+  const which = (command: string) => isAbsolute(command)
+    ? existsSync(command)
+    : (process.env.PATH ?? "").split(delimiter).some((dir) => dir && existsSync(join(dir, command)));
   const claudeInstalled = which(claudeCmd) || existsSync(join(homedir(), ".local", "bin", claudeCmd));
   let lmstudio: { status: string; detail: string };
   try {

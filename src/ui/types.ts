@@ -166,13 +166,14 @@ export interface HarnessSession {
   messages?: Array<{
     id: string;
     role: "user" | "assistant" | "system";
-    provider?: "codex" | "antigravity" | "ollama";
+    provider?: "codex" | "antigravity" | "ollama" | "claude";
     content: string;
     createdAt: string;
     usage?: Record<string, number>;
     error?: string;
   }>;
   providerConversations?: Partial<Record<"codex" | "antigravity" | "ollama", string>>;
+  claudeSessionId?: string;
   proposals?: Array<{
     id: string;
     provider: "codex" | "antigravity" | "ollama";
