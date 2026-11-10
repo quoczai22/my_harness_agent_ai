@@ -66,18 +66,36 @@ export const LoopWorkspace: React.FC<Props> = ({ workspaces, workspaceId, onSele
   const [projectFiles, setProjectFiles] = useState<string[]>([]);
   const [newSource, setNewSource] = useState("");
   const [collapsed, setCollapsed] = useState(false);
+  const [repoSessions, setRepoSessions] = useState<Record<string, HarnessSession[]>>({});
+  const [closedRepos, setClosedRepos] = useState<string[]>([]);
+  const pendingSession = useRef<string | null>(null);
   const chatAbort = useRef<AbortController | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
 
   const session = sessions.find((s) => s.id === sessionId);
 
+  const fetchSessions = useCallback(async (id: string): Promise<HarnessSession[]> => {
+    const data = await (await fetch(`/api/sessions?workspace=${encodeURIComponent(id)}`)).json();
+    return (data.sessions ?? []).slice().sort((a: HarnessSession, b: HarnessSession) => b.updatedAt.localeCompare(a.updatedAt));
+  }, []);
+
   const loadSessions = useCallback(async (keep?: string) => {
-    const data = await (await fetch(`/api/sessions${q}`)).json();
-    const list: HarnessSession[] = (data.sessions ?? []).slice().sort((a: HarnessSession, b: HarnessSession) => b.updatedAt.localeCompare(a.updatedAt));
+    const list = await fetchSessions(workspaceId);
     setSessions(list);
-    setSessionId((current) => keep ?? (list.some((s) => s.id === current) ? current : list[0]?.id ?? ""));
-  }, [q]);
+    setRepoSessions((current) => ({ ...current, [workspaceId]: list }));
+    const wanted = keep ?? pendingSession.current ?? undefined;
+    pendingSession.current = null;
+    setSessionId((current) => wanted && list.some((s) => s.id === wanted) ? wanted : list.some((s) => s.id === current) ? current : list[0]?.id ?? "");
+  }, [workspaceId, fetchSessions]);
+
+  // Every repository's conversations, for the grouped sidebar.
+  useEffect(() => {
+    let alive = true;
+    Promise.all(workspaces.filter((w) => w.status === "ACTIVE").map(async (w) => [w.id, await fetchSessions(w.id).catch(() => [])] as const))
+      .then((entries) => { if (alive) setRepoSessions((current) => ({ ...current, ...Object.fromEntries(entries) })); });
+    return () => { alive = false; };
+  }, [workspaces, fetchSessions]);
 
   const loadState = useCallback(async () => {
     const response = await fetch(`/api/loop/state${q}`);
@@ -142,12 +160,21 @@ export const LoopWorkspace: React.FC<Props> = ({ workspaces, workspaceId, onSele
 
   // ---- actions ----
 
-  const createSession = async () => {
-    const title = window.prompt("Tên session", "Session mới");
+  const selectSession = (repoId: string, id: string) => {
+    if (repoId === workspaceId) return setSessionId(id);
+    pendingSession.current = id;
+    onSelectWorkspace(repoId);
+  };
+
+  const createSession = async (repoId = workspaceId) => {
+    const repo = workspaces.find((w) => w.id === repoId);
+    const title = window.prompt(`Tên cuộc trò chuyện mới trong ${repo?.name ?? "repo"}`, "Cuộc trò chuyện mới");
     if (title === null) return;
     try {
-      const data = await postJson(`/api/sessions${q}`, { title, mode: "auto" });
-      await loadSessions(data.session.id);
+      const data = await postJson(`/api/sessions?workspace=${encodeURIComponent(repoId)}`, { title, mode: "auto" });
+      setClosedRepos((current) => current.filter((id) => id !== repoId));
+      if (repoId === workspaceId) await loadSessions(data.session.id);
+      else selectSession(repoId, data.session.id);
     } catch (e: any) { onError(e.message); }
   };
 
@@ -323,18 +350,10 @@ export const LoopWorkspace: React.FC<Props> = ({ workspaces, workspaceId, onSele
       <aside className="lp2-side">
         <div className="lp2-side-top">
           <button className="lp2-ghost lp2-icon" onClick={() => setCollapsed(!collapsed)} aria-label={collapsed ? "Mở rộng thanh bên" : "Thu gọn thanh bên"} title={collapsed ? "Mở rộng" : "Thu gọn"}>{collapsed ? "»" : "«"}</button>
-          {!collapsed && <button className="lp2-new" onClick={createSession}>＋ Cuộc trò chuyện mới</button>}
+          {!collapsed && <button className="lp2-new" onClick={() => createSession()} title={`Trong ${workspace?.name ?? "repo đang chọn"}`}>＋ Cuộc trò chuyện mới</button>}
         </div>
         {!collapsed && <>
-          <div className="lp2-label">Session</div>
-          <div className="lp2-list">
-            {sessions.length ? sessions.map((s) => (
-              <button key={s.id} className={`lp2-item ${s.id === sessionId ? "active" : ""}`} onClick={() => setSessionId(s.id)} title={s.title}>
-                <span className="lp2-item-title">{s.title}</span><span className="lp2-item-meta">{s.messageCount} tin · {new Date(s.updatedAt).toLocaleDateString()}</span>
-              </button>
-            )) : <p className="lp2-empty">Chưa có session.</p>}
-          </div>
-          <div className="lp2-label lp2-label-row"><span>Repo</span><button className="lp2-ghost lp2-icon" onClick={() => setImportMode(importMode ? "" : "path")} aria-label="Import repo" title="Import repo">＋</button></div>
+          <div className="lp2-label lp2-label-row"><span>Repo và cuộc trò chuyện</span><button className="lp2-ghost lp2-icon" onClick={() => setImportMode(importMode ? "" : "path")} aria-label="Thêm repo" title="Thêm repo">＋</button></div>
           {importMode && (
             <div className="lp2-import">
               <div className="lp2-seg" role="tablist">
@@ -345,12 +364,33 @@ export const LoopWorkspace: React.FC<Props> = ({ workspaces, workspaceId, onSele
               <button className="lp2-primary" onClick={importRepo} disabled={importBusy}>{importBusy ? "Đang import…" : importMode === "url" ? "Clone và thêm" : "Thêm repo"}</button>
             </div>
           )}
-          <div className="lp2-list">
-            {workspaces.map((w) => (
-              <button key={w.id} className={`lp2-item ${w.id === workspaceId ? "active" : ""}`} onClick={() => onSelectWorkspace(w.id)} disabled={w.status !== "ACTIVE"} title={w.path}>
-                <span className="lp2-item-title">{w.name}</span><span className="lp2-item-meta">{w.status === "ACTIVE" ? w.path : "không truy cập được"}</span>
-              </button>
-            ))}
+          <div className="lp2-repos">
+            {workspaces.map((w) => {
+              const open = !closedRepos.includes(w.id);
+              const list = w.id === workspaceId ? sessions : repoSessions[w.id] ?? [];
+              const available = w.status === "ACTIVE";
+              return (
+                <div key={w.id} className={`lp2-repo ${w.id === workspaceId ? "current" : ""}`}>
+                  <div className="lp2-repo-head">
+                    <button className="lp2-repo-toggle" onClick={() => setClosedRepos((current) => open ? [...current, w.id] : current.filter((id) => id !== w.id))} aria-expanded={open} title={w.path}>
+                      <span className="lp2-chevron" aria-hidden="true">{open ? "▾" : "▸"}</span>
+                      <span className="lp2-repo-name">{w.name}</span>
+                      {!available && <span className="lp2-repo-off">không truy cập được</span>}
+                    </button>
+                    {available && <button className="lp2-ghost lp2-icon" onClick={() => createSession(w.id)} aria-label={`Cuộc trò chuyện mới trong ${w.name}`} title="Cuộc trò chuyện mới">＋</button>}
+                  </div>
+                  {open && available && (
+                    <div className="lp2-list">
+                      {list.length ? list.map((s) => (
+                        <button key={s.id} className={`lp2-item ${w.id === workspaceId && s.id === sessionId ? "active" : ""}`} onClick={() => selectSession(w.id, s.id)} title={s.title}>
+                          <span className="lp2-item-title">{s.title}</span>
+                        </button>
+                      )) : <button className="lp2-item lp2-item-empty" onClick={() => createSession(w.id)}>＋ Bắt đầu cuộc trò chuyện</button>}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </>}
       </aside>
@@ -390,53 +430,83 @@ export const LoopWorkspace: React.FC<Props> = ({ workspaces, workspaceId, onSele
             )}
           </div>
           {currentTask && <p className="lp2-current">Task đang làm: <strong>{currentTask.title}</strong></p>}
-          <ol className="lp2-flow">
-            {pipeline?.stages.map((stage, index) => {
-              const result = run?.stageResults[stage.id];
-              const status = result?.status ?? "waiting";
-              const back = stage.onFail ? pipeline.stages.find((s) => s.id === stage.onFail) : undefined;
-              const isBackward = back ? pipeline.stages.indexOf(back) < index : false;
-              const agent = agentById(stage.agent);
-              const open = openStage === stage.id;
-              const looping = loopBack === stage.id && run?.status === "running";
-              return (
-                <li key={stage.id} className="lp2-flow-item">
-                  <button className={`lp2-node s-${status} ${run?.currentStageId === stage.id && run.status !== "completed" ? "current" : ""}`} onClick={() => setOpenStage(open ? "" : stage.id)} aria-expanded={open}>
-                    <span className={`lp2-glyph g-${stage.agent ?? stage.kind}`}>{stage.agent ? AGENT_GLYPH[stage.agent] ?? stage.agent.slice(0, 2).toUpperCase() : KIND_GLYPH[stage.kind]}</span>
-                    <span className="lp2-node-body">
-                      <span className="lp2-node-title">{stageTitle(stage)} <span className="lp2-role">{stage.role ? ROLE_LABEL[stage.role] ?? stage.role : KIND_LABEL[stage.kind]}</span></span>
-                      <span className="lp2-node-detail">{nodeDetail(stage, result)}</span>
-                    </span>
-                    {agent && agent.status !== "available" && <span className="lp2-warn-chip" title={agent.detail}>{AVAILABILITY[agent.status] ?? agent.status}</span>}
-                    <span className={`lp2-pill p-${status}`}>{STAGE_STATUS[status] ?? status}{result && result.round > 1 ? ` · v${result.round}` : ""}</span>
-                  </button>
-                  {open && (
-                    <div className="lp2-node-open">
-                      {result ? <>
-                        <div className="lp2-mini">Vòng {result.round}{result.verdict ? ` · VERDICT ${result.verdict}` : ""}{result.exitCode !== undefined && result.exitCode !== null ? ` · exit ${result.exitCode}` : ""} · {time(result.at)}</div>
-                        {result.issues && <pre className="lp2-pre fail">{result.issues}</pre>}
-                        {result.outputTail && <pre className="lp2-pre">{result.outputTail}</pre>}
-                      </> : <div className="lp2-mini">Bước này chưa chạy trong run đang xem.</div>}
-                      {agent && <div className="lp2-mini">{agent.name}: {agent.detail}</div>}
-                    </div>
-                  )}
-                  {index < pipeline.stages.length - 1 && (
-                    <div className="lp2-connector">
-                      <span className={`lp2-vline ${status === "passed" ? "done" : ""}`} aria-hidden="true" />
-                      {back && isBackward && <span className={`lp2-loopback ${looping ? "active" : ""}`}>↺ Nếu trượt: quay lại {stageTitle(back)}</span>}
-                    </div>
-                  )}
-                  {index === pipeline.stages.length - 1 && back && isBackward && <div className="lp2-connector"><span className={`lp2-loopback ${looping ? "active" : ""}`}>↺ Nếu trả lại: quay lại {stageTitle(back)}</span></div>}
-                </li>
-              );
-            })}
-          </ol>
-          {gate && pipeline && (
-            <div className="lp2-rules">
-              <div className="lp2-rule fail"><strong>Nếu {stageTitle(gate)} trượt</strong><span>Lỗi được gửi kèm cho {stageTitle(pipeline.stages.find((s) => s.id === gate.onFail) ?? gate)} sửa tiếp. Trượt {pipeline.maxRounds} vòng thì dừng chờ bạn.</span></div>
-              <div className="lp2-rule pass"><strong>Nếu đạt</strong><span>Chỉ đạt khi lệnh test thoát mã 0 và {AGENT_LABEL[gate.agent ?? ""] ?? gate.agent} kết luận PASS. Sau đó sang {stageTitle(pipeline.stages.find((s) => s.id === gate.onPass) ?? gate)}.</span></div>
-            </div>
-          )}
+          {(() => {
+            if (!pipeline) return null;
+            const ctx = pipeline.stages.find((s) => s.kind === "context");
+            const ctxResult = ctx ? run?.stageResults[ctx.id] : undefined;
+            const cards = pipeline.stages.filter((s) => s.kind !== "context");
+            const backEdges = pipeline.stages
+              .map((stage, index) => ({ stage, index, back: stage.onFail ? pipeline.stages.find((s) => s.id === stage.onFail) : undefined }))
+              .filter((e) => e.back && pipeline.stages.indexOf(e.back) < e.index);
+            const open = pipeline.stages.find((s) => s.id === openStage);
+            const openResult = open ? run?.stageResults[open.id] : undefined;
+            const openAgent = agentById(open?.agent);
+            const gateResult = gate ? run?.stageResults[gate.id] : undefined;
+            const failActive = Boolean(loopBack) && run?.status === "running";
+            const passActive = gateResult?.status === "passed" && ["running", "waiting-human", "paused"].includes(run?.status ?? "");
+            return <>
+              {ctx && (
+                <button className={`lp2-ctx s-${ctxResult?.status ?? "waiting"}`} onClick={() => setOpenStage(openStage === ctx.id ? "" : ctx.id)} aria-expanded={openStage === ctx.id}>
+                  <span className="lp2-glyph g-context">DOC</span>
+                  <span>{stageTitle(ctx)}: {nodeDetail(ctx, ctxResult)}</span>
+                  <span className={`lp2-pill p-${ctxResult?.status ?? "waiting"}`}>{STAGE_STATUS[ctxResult?.status ?? "waiting"]}</span>
+                </button>
+              )}
+              <ol className="lp2-cards">
+                {cards.map((stage, i) => {
+                  const result = run?.stageResults[stage.id];
+                  const status = result?.status ?? "waiting";
+                  const agent = agentById(stage.agent);
+                  const current = run?.currentStageId === stage.id && run.status !== "completed";
+                  return (
+                    <li key={stage.id} className="lp2-card-item">
+                      <button className={`lp2-acard s-${status} ${current ? "current" : ""} ${openStage === stage.id ? "selected" : ""}`} onClick={() => setOpenStage(openStage === stage.id ? "" : stage.id)} aria-expanded={openStage === stage.id}>
+                        <span className="lp2-acard-top">
+                          <span className={`lp2-glyph g-${stage.agent ?? stage.kind}`}>{stage.agent ? AGENT_GLYPH[stage.agent] ?? stage.agent.slice(0, 2).toUpperCase() : KIND_GLYPH[stage.kind]}</span>
+                          <strong className="lp2-acard-title">{stage.agent ? AGENT_LABEL[stage.agent] ?? stage.agent : stageTitle(stage)}</strong>
+                        </span>
+                        <span className="lp2-acard-meta">
+                          <span className="lp2-role">{stage.role ? ROLE_LABEL[stage.role] ?? stage.role : KIND_LABEL[stage.kind]}</span>
+                          <span className={`lp2-pill p-${status}`}>{STAGE_STATUS[status] ?? status}{result && result.round > 1 ? ` · v${result.round}` : ""}</span>
+                        </span>
+                        <span className="lp2-acard-label">{stageTitle(stage)}</span>
+                        <span className="lp2-acard-box lp2-mono">{nodeDetail(stage, result)}</span>
+                        {agent && agent.status !== "available" && <span className="lp2-warn-chip" title={agent.detail}>{agent.name} {AVAILABILITY[agent.status] ?? agent.status}</span>}
+                      </button>
+                      {i < cards.length - 1 && <span className={`lp2-arrow ${status === "passed" ? "done" : ""}`} aria-hidden="true">→</span>}
+                    </li>
+                  );
+                })}
+              </ol>
+              {backEdges.length > 0 && (
+                <div className="lp2-backs">
+                  {backEdges.map(({ stage, back }) => (
+                    <span key={stage.id} className={`lp2-loopback ${loopBack === stage.id && run?.status === "running" ? "active" : ""}`}>↺ {stageTitle(stage)} {stage.kind === "human" ? "bị trả lại" : "trượt"} → quay lại {stageTitle(back as Stage)}</span>
+                  ))}
+                </div>
+              )}
+              {open && (
+                <div className="lp2-node-open">
+                  <div className="lp2-mini"><strong>{stageTitle(open)}</strong>{openResult ? ` · vòng ${openResult.round}${openResult.verdict ? ` · VERDICT ${openResult.verdict}` : ""}${openResult.exitCode !== undefined && openResult.exitCode !== null ? ` · exit ${openResult.exitCode}` : ""} · ${time(openResult.at)}` : " · chưa chạy trong run đang xem"}</div>
+                  {openResult?.issues && <pre className="lp2-pre fail">{openResult.issues}</pre>}
+                  {openResult?.outputTail && <pre className="lp2-pre">{openResult.outputTail}</pre>}
+                  {openAgent && <div className="lp2-mini">{openAgent.name}: {openAgent.detail}</div>}
+                </div>
+              )}
+              {gate && (
+                <div className="lp2-rules">
+                  <div className={`lp2-rule fail ${failActive ? "active" : ""}`}>
+                    <strong>Nếu {stageTitle(gate)} trượt <span className="lp2-count">đã trượt {currentTask?.failedRounds ?? 0}/{pipeline.maxRounds}</span></strong>
+                    <span>Lỗi được gửi kèm cho {stageTitle(pipeline.stages.find((s) => s.id === gate.onFail) ?? gate)} sửa tiếp. Trượt {pipeline.maxRounds} vòng thì dừng chờ bạn.</span>
+                  </div>
+                  <div className={`lp2-rule pass ${passActive ? "active" : ""}`}>
+                    <strong>Nếu đạt</strong>
+                    <span>Chỉ đạt khi lệnh test thoát mã 0 và {AGENT_LABEL[gate.agent ?? ""] ?? gate.agent} kết luận PASS. Sau đó sang {stageTitle(pipeline.stages.find((s) => s.id === gate.onPass) ?? gate)}.</span>
+                  </div>
+                </div>
+              )}
+            </>;
+          })()}
           {otherAgents.length > 0 && (
             <div className="lp2-others">
               <span>Agent khác:</span>
@@ -525,7 +595,7 @@ export const LoopWorkspace: React.FC<Props> = ({ workspaces, workspaceId, onSele
         <section className="lp2-chat">
           <header className="lp2-chat-head">
             <span className="lp2-glyph g-claude">CC</span>
-            <div><strong>Claude Code</strong><span className="lp2-hint">AI chính · chỉ đọc, không sửa file</span></div>
+            <div><strong>Claude Code · {workspace?.name ?? ""}</strong><span className="lp2-hint">{session ? `${session.title} · ` : ""}chỉ đọc, không sửa file</span></div>
             <span className={`lp2-dot ${agentById("claude")?.status === "available" ? "ok" : "bad"}`} title={agentById("claude")?.detail} />
           </header>
           <div className="lp2-messages" ref={messagesRef} aria-live="polite">
