@@ -3,8 +3,8 @@
  * branch outside the imported repository, and only the Harness commits.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { existsSync, lstatSync, readlinkSync, realpathSync, rmSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 export interface GitResult { code: number; stdout: string; stderr: string }
 
@@ -38,6 +38,33 @@ export function headCommit(repo: string): string {
 
 export function hasUncommittedChanges(repo: string): boolean {
   return gitOk(repo, ["status", "--porcelain"]).trim().length > 0;
+}
+
+/**
+ * HEAD, current branch and working-tree status of the imported repository.
+ * The loop compares it before and after each stage to catch an agent that
+ * wrote outside its worktree. Atlas session metadata (.continuity/harness/)
+ * is left out because the chat writes it on purpose.
+ */
+export function repoFingerprint(repo: string): string {
+  const head = git(repo, ["rev-parse", "--verify", "-q", "HEAD"]).stdout.trim();
+  const branch = git(repo, ["symbolic-ref", "-q", "HEAD"]).stdout.trim();
+  const status = git(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).stdout
+    .split("\0").filter((entry) => entry && !entry.slice(3).startsWith(".continuity/harness/")).sort();
+  return JSON.stringify({ head, branch, status });
+}
+
+/** True when a changed path is a symlink whose target lies outside the worktree. */
+export function symlinkEscapes(worktree: string, path: string): boolean {
+  const absolute = resolve(worktree, path);
+  let stat;
+  try { stat = lstatSync(absolute); } catch { return false; }
+  if (!stat.isSymbolicLink()) return false;
+  let target: string;
+  try { target = realpathSync(absolute); } catch { target = resolve(dirname(absolute), readlinkSync(absolute)); }
+  const root = realpathSync(worktree);
+  const rel = relative(root, target);
+  return !rel || rel.startsWith("..") || isAbsolute(rel);
 }
 
 export function createRunWorktree(repo: string, worktreeDir: string, branch: string): { base: string } {

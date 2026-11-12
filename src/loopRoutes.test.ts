@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { join } from "node:path";
 import { createDashboardServer } from "./dashboard.js";
@@ -30,7 +30,7 @@ function call(port: number, method: string, path: string, body?: unknown, header
     const data = body === undefined ? undefined : JSON.stringify(body);
     const req = request({
       host: "127.0.0.1", port, method, path,
-      headers: { ...(data ? { "Content-Type": "application/json" } : {}), ...headers },
+      headers: { ...(data ? { "Content-Type": "application/json", Origin: `http://127.0.0.1:${port}` } : {}), ...headers },
     }, (res) => {
       let text = "";
       res.on("data", (chunk) => (text += chunk));
@@ -56,14 +56,21 @@ test("the loop API runs a task end to end, streams events, chats with Claude and
   mkdirSync(join(harnessRoot, ".continuity"), { recursive: true });
   writeFileSync(join(harnessRoot, ".continuity", "workspaces.json"), JSON.stringify({ workspaces: [{ id: "demo", name: "Demo", path: repo }] }));
   const previous = process.env.HARNESS_AGENT_CONFIG;
+  const previousState = process.env.HARNESS_STATE_DIR;
   process.env.HARNESS_AGENT_CONFIG = configPath;
+  process.env.HARNESS_STATE_DIR = join(dir, "state");
   const dashboard = createDashboardServer({ workspaceRoot: harnessRoot, port: 0 });
   const port = await dashboard.start();
   try {
     // Cross-site requests are refused.
     assert.equal((await call(port, "POST", "/api/loop/runs?workspace=demo", {}, { Origin: "http://evil.example" })).status, 403);
+    const noOrigin = await new Promise<number>((r) => {
+      const req = request({ host: "127.0.0.1", port, method: "POST", path: "/api/loop/runs?workspace=demo", headers: { "Content-Type": "application/json" } }, (res) => { res.resume(); r(res.statusCode ?? 0); });
+      req.end("{}");
+    });
+    assert.equal(noOrigin, 403);
     const plain = await new Promise<number>((r) => {
-      const req = request({ host: "127.0.0.1", port, method: "POST", path: "/api/loop/runs?workspace=demo", headers: { "Content-Type": "text/plain" } }, (res) => { res.resume(); r(res.statusCode ?? 0); });
+      const req = request({ host: "127.0.0.1", port, method: "POST", path: "/api/loop/runs?workspace=demo", headers: { "Content-Type": "text/plain", Origin: `http://127.0.0.1:${port}` } }, (res) => { res.resume(); r(res.statusCode ?? 0); });
       req.end("{}");
     });
     assert.equal(plain, 403);
@@ -98,6 +105,8 @@ test("the loop API runs a task end to end, streams events, chats with Claude and
     }
     assert.equal(state.runs[0].status, "completed");
     assert.equal(state.tasks[0].status, "passed");
+    assert.ok(existsSync(join(dir, "state", "loop", "demo", "state.json")), "loop state lives in HARNESS_STATE_DIR");
+    assert.ok(!existsSync(join(harnessRoot, ".continuity", "harness", "loop")), "nothing is written under the Harness root");
 
     const events = await new Promise<string>((resolvePromise) => {
       const req = request({ host: "127.0.0.1", port, path: `/api/loop/events?workspace=demo&run=${runId}` }, (res) => {
@@ -118,6 +127,8 @@ test("the loop API runs a task end to end, streams events, chats with Claude and
     assert.match(badPipeline.text, /at least one stage/);
   } finally {
     await dashboard.stop();
+    if (previousState === undefined) delete process.env.HARNESS_STATE_DIR;
+    else process.env.HARNESS_STATE_DIR = previousState;
     if (previous === undefined) delete process.env.HARNESS_AGENT_CONFIG;
     else process.env.HARNESS_AGENT_CONFIG = previous;
     rmSync(dir, { recursive: true, force: true });

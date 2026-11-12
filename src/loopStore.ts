@@ -5,7 +5,8 @@
  * per run.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import type { PipelineDefinition } from "./pipeline.js";
 
 export type TaskStatus = "proposal" | "queued" | "running" | "passed" | "blocked" | "canceled";
@@ -80,6 +81,17 @@ export interface LoopEvent {
   stageId?: string;
   agent?: string;
   data?: Record<string, unknown>;
+}
+
+/**
+ * Where the loop keeps run worktrees, state and agent config: a per-user
+ * directory outside every repository, so no run ever writes inside the
+ * repository it works on.
+ */
+export function harnessStateDir(): string {
+  if (process.env.HARNESS_STATE_DIR) return resolve(process.env.HARNESS_STATE_DIR);
+  const base = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
+  return join(base, "harness-atlas");
 }
 
 export function safeWorkspaceKey(workspaceId: string): string {

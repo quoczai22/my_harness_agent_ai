@@ -7,4 +7,4 @@
 - [x] Add Claude Code chat over `claude -p --output-format stream-json --resume`, per-session ids, and the task proposal→approve flow.
 - [x] Add repository import by local path and by `https://` clone.
 - [x] Rebuild the page into sessions, repositories, chat, agent cards and pipeline panel, keeping the Code tab; exercise it in a browser against fake agents.
-- [ ] Run the full test suite, record one real run with Antigravity, Codex and Claude Code, then request implementation review.
+- [x] Run the full test suite, record one real run with Antigravity, Codex and Claude Code, then request implementation review.

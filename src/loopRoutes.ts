@@ -31,6 +31,8 @@ export function isTrustedLoopRequest(req: IncomingMessage): boolean {
   if (!LOOPBACK_HOSTS.has(hostname)) return false;
   const origin = req.headers.origin;
   if (origin && origin !== `http://${host}`) return false;
+  // Browsers send Origin on every POST; a POST without it did not come from the page.
+  if (req.method === "POST" && !origin) return false;
   if (req.method === "POST" && !(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) return false;
   return true;
 }

@@ -13,7 +13,7 @@ import {
 } from "./agentRunner.js";
 import {
   changedFiles, commitAll, createRunWorktree, hasUncommittedChanges, matchesAny, removeRunWorktree,
-  repositoryRoot, revertFiles, worktreeDiff,
+  repoFingerprint, repositoryRoot, revertFiles, symlinkEscapes, worktreeDiff,
 } from "./gitWorktree.js";
 import { LoopStore, safeWorkspaceKey, type LoopEvent, type LoopRun, type LoopTask, type RepoCommands, type StageResult } from "./loopStore.js";
 import { assertValidPipeline, DEFAULT_PIPELINE, LOCAL_MODEL_AGENTS, nextStageId, type PipelineDefinition, type PipelineStage } from "./pipeline.js";
@@ -344,9 +344,18 @@ export class LoopEngine extends EventEmitter {
         this.emitEvent(workspaceId, { runId, type: "stage-started", taskId: task.id, stageId, agent: stage.agent, data: { kind: stage.kind, round } });
 
         const current = store.read().tasks.find((t) => t.id === task.id) as LoopTask;
-        const outcome = stage.kind === "human"
+        const guarded = stage.kind === "agent" || stage.kind === "command" || stage.kind === "gate";
+        const repoBefore = guarded ? repoFingerprint(run.repoRoot) : "";
+        let outcome = stage.kind === "human"
           ? await this.humanStage(workspaceId, runId, handle, current, stage)
           : await this.runStage(workspaceId, this.getRun(workspaceId, runId), current, stage, handle, failedRounds);
+        if (guarded && !handle.controller.signal.aborted && repoFingerprint(run.repoRoot) !== repoBefore) {
+          // The imported repository must only change through a merge the user makes.
+          outcome = {
+            ...outcome, passed: false,
+            blocking: `"${stage.label ?? stage.id}" changed the imported repository at ${run.repoRoot} (its HEAD, branch or working files), outside the run worktree. Check that repository by hand; the run stopped so nothing else is touched.`,
+          };
+        }
         if (handle.controller.signal.aborted) return this.finishCanceled(workspaceId, runId, task.id);
 
         this.setStageResult(workspaceId, runId, stageId, {
@@ -496,6 +505,11 @@ export class LoopEngine extends EventEmitter {
         return { passed: false, exitCode: agentResult.exitCode, outputTail: tail(agentResult.output), issues: `${agent} did not finish (${describeExit(agentResult)}).\n${tail(agentResult.output, 3_000)}` };
       }
       const changed = changedFiles(run.worktree).map((file) => file.path);
+      const escaping = changed.filter((path) => symlinkEscapes(run.worktree, path));
+      if (escaping.length) {
+        revertFiles(run.worktree, escaping);
+        return { passed: false, exitCode: 0, outputTail: tail(agentResult.output), issues: `Symlinks pointing outside the worktree are not allowed (reverted): ${escaping.join(", ")}` };
+      }
       const outOfScope = task.allowedFiles.length ? changed.filter((path) => !matchesAny(path, task.allowedFiles)) : [];
       if (outOfScope.length) {
         revertFiles(run.worktree, outOfScope);

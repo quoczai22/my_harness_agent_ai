@@ -23,6 +23,7 @@ import {
 } from "./workspaceRegistry.js";
 import { runAntigravity } from "./antigravityAdapter.js";
 import { LoopEngine } from "./loopEngine.js";
+import { harnessStateDir } from "./loopStore.js";
 import { handleLoopRequest } from "./loopRoutes.js";
 
 export interface RegisteredWorkspace {
@@ -1344,7 +1345,7 @@ export function createDashboardServer(options: DashboardOptions = {}) {
       loadUserWorkspaceRegistry(localRegistryPath),
     );
   const activeAntigravityRuns = new Map<string, AbortController>();
-  const loopStateRoot = join(workspaceRoot, ".continuity", "harness");
+  const loopStateRoot = harnessStateDir();
   const loopEngine = new LoopEngine({
     stateRoot: loopStateRoot,
     agentConfigPath: process.env.HARNESS_AGENT_CONFIG ?? join(loopStateRoot, "agents.json"),

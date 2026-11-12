@@ -77,6 +77,13 @@ New:
 - Agent CLIs are run with fixed argument arrays from config; user text reaches them only as the prompt argument or a prompt file, never through a shell.
 - No merge or push is performed by the Harness.
 - Clone accepts `https://` URLs only.
+- Loop state, run worktrees and the agent config live in a per-user directory outside every repository (`$HARNESS_STATE_DIR`, else `$XDG_STATE_HOME/harness-atlas`, else `~/.local/state/harness-atlas`).
+- Before and after every agent, command and gate stage the Harness compares the imported repository's HEAD, branch and working-tree status; any change stops the run with the task blocked. Atlas chat metadata under `.continuity/harness/` is excluded.
+- A changed path that is a symlink pointing outside the worktree is reverted and counts as a failed round.
+- `/api/loop/*` requires a loopback Host; POSTs also require the page's own Origin and a JSON body.
+- Repository build/test commands are the user's own configured strings and run with `sh -c` in the worktree.
+
+Known limits, recorded from the independent review on 2026-11-12: agent CLIs run with the user's own permissions, so containment rests on each CLI's mode (Codex sandbox, Claude permission mode) plus the after-the-fact repository check above; that check cannot see a push to a remote. Another process of the same user can still call the loopback API. Closing these needs an OS-level sandbox and is out of scope for this change.
 
 ## Verification
 

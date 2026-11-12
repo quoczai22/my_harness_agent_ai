@@ -30,6 +30,11 @@ if (role === "implement") {
   fs.mkdirSync("src", { recursive: true });
   fs.writeFileSync("src/feature.js", "export const round = " + n + ";\\n");
   if (scenario.writeOutside) fs.writeFileSync("README.md", "overwritten\\n");
+  if (scenario.intrude) {
+    const common = require("child_process").execSync("git rev-parse --git-common-dir").toString().trim();
+    fs.writeFileSync(path.join(path.dirname(path.resolve(common)), "INTRUDER.txt"), "x");
+  }
+  if (scenario.symlinkOut) fs.symlinkSync(path.join(dir, "scenario.json"), "src/link.json");
   console.log("Changed src/feature.js");
 } else {
   const list = scenario[role + "Verdicts"] || ["PASS"];
@@ -188,6 +193,35 @@ test("an agent that echoes the instructions and exits with an error never passes
     assert.match(String(firstGate?.data?.issues), /exited with an error/);
     assert.equal(t.engine.getRun("ws", run.id).status, "completed");
     assert.deepEqual(t.counters(), { implement: 2, test: 3, review: 1 });
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("an agent that writes to the imported repository stops the run", async () => {
+  const t = setup({ intrude: true });
+  try {
+    t.engine.addTasks("ws", [{ title: "Intruder" }], "user");
+    const run = t.engine.startRun("ws", t.repo);
+    await t.engine.waitForIdle(run.id);
+    const task = t.engine.store("ws").read().tasks[0];
+    assert.equal(task.status, "blocked");
+    assert.equal(task.failedRounds, 0);
+    assert.match(String(t.engine.getRun("ws", run.id).error), /changed the imported repository/);
+    assert.deepEqual(t.counters(), { implement: 1 });
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("a symlink pointing outside the worktree is reverted and costs a round", async () => {
+  const t = setup({ symlinkOut: true, testVerdicts: ["PASS"], reviewVerdicts: ["PASS"] });
+  try {
+    t.engine.addTasks("ws", [{ title: "Symlink", allowedFiles: ["src/**"] }], "user");
+    const run = t.engine.startRun("ws", t.repo);
+    await t.engine.waitForIdle(run.id);
+    const failed = t.engine.store("ws").readEvents(run.id).find((e) => e.type === "stage-finished" && e.data?.passed === false);
+    assert.match(String(failed?.data?.issues), /Symlinks pointing outside the worktree are not allowed \(reverted\): src\/link\.json/);
   } finally {
     t.cleanup();
   }
