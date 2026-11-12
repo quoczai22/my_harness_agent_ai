@@ -5,7 +5,7 @@ Agents: Antigravity (`agy`, Gemini 3.8 Flash medium), Codex (`codex exec`, gpt-5
 
 ## Automated tests
 
-`npm test`: 84/84 pass (51 earlier tests, 33 for the loop).
+`npm test`: 86/86 pass (51 earlier tests, 35 for the loop).
 
 ## Real runs (throwaway repository, task "Trang chào mừng", allowed files `index.html`, `style.css`)
 
@@ -30,3 +30,5 @@ Codex, read-only, 2026-11-12: `VERDICT: FAIL` with five findings. Checked one by
 | POST without Origin accepted | Valid | POSTs require the page's Origin |
 
 Remaining limits are listed in the design's security section.
+
+Second Codex review of the fix commit `eba992a`: three of the four fixes confirmed; three gaps reported, all valid and fixed in the next commit: a state directory set inside the repository is refused; the symlink check runs after every agent, command and gate stage whatever its outcome; loop state is keyed by registry id plus repository path.

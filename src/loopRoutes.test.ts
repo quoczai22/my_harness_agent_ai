@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { join } from "node:path";
 import { createDashboardServer } from "./dashboard.js";
@@ -105,7 +105,10 @@ test("the loop API runs a task end to end, streams events, chats with Claude and
     }
     assert.equal(state.runs[0].status, "completed");
     assert.equal(state.tasks[0].status, "passed");
-    assert.ok(existsSync(join(dir, "state", "loop", "demo", "state.json")), "loop state lives in HARNESS_STATE_DIR");
+    const loopDirs = readdirSync(join(dir, "state", "loop"));
+    assert.equal(loopDirs.length, 1);
+    assert.match(loopDirs[0], /^demo-[0-9a-f]{10}$/, "loop state is keyed by workspace id and repository path");
+    assert.ok(existsSync(join(dir, "state", "loop", loopDirs[0], "state.json")), "loop state lives in HARNESS_STATE_DIR");
     assert.ok(!existsSync(join(harnessRoot, ".continuity", "harness", "loop")), "nothing is written under the Harness root");
 
     const events = await new Promise<string>((resolvePromise) => {

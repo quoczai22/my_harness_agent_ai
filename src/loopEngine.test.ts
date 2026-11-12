@@ -35,6 +35,7 @@ if (role === "implement") {
     fs.writeFileSync(path.join(path.dirname(path.resolve(common)), "INTRUDER.txt"), "x");
   }
   if (scenario.symlinkOut) fs.symlinkSync(path.join(dir, "scenario.json"), "src/link.json");
+  if (scenario.symlinkThenCrash) { fs.symlinkSync(path.join(dir, "scenario.json"), "src/link.json"); process.exit(1); }
   console.log("Changed src/feature.js");
 } else {
   const list = scenario[role + "Verdicts"] || ["PASS"];
@@ -222,6 +223,32 @@ test("a symlink pointing outside the worktree is reverted and costs a round", as
     await t.engine.waitForIdle(run.id);
     const failed = t.engine.store("ws").readEvents(run.id).find((e) => e.type === "stage-finished" && e.data?.passed === false);
     assert.match(String(failed?.data?.issues), /Symlinks pointing outside the worktree are not allowed \(reverted\): src\/link\.json/);
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("an escaping symlink is reverted even when the agent exits with an error", async () => {
+  const t = setup({ symlinkThenCrash: true });
+  try {
+    t.engine.addTasks("ws", [{ title: "Crash", allowedFiles: ["src/**"] }], "user");
+    const run = t.engine.startRun("ws", t.repo);
+    await t.engine.waitForIdle(run.id);
+    const run2 = t.engine.getRun("ws", run.id);
+    const failed = t.engine.store("ws").readEvents(run.id).find((e) => e.type === "stage-finished" && e.data?.passed === false);
+    assert.match(String(failed?.data?.issues), /Symlinks pointing outside the worktree are not allowed \(reverted\)/);
+    assert.equal(existsSync(join(run2.worktree, "src", "link.json")), false);
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("a state directory inside the repository is refused", () => {
+  const t = setup({});
+  try {
+    const inside = new LoopEngine({ stateRoot: join(t.repo, ".harness-state"), agentConfigPath: join(t.dir, "state", "agents.json") });
+    inside.addTasks("ws", [{ title: "Nope" }], "user");
+    assert.throws(() => inside.startRun("ws", t.repo), /STATE_DIR_INSIDE_REPOSITORY/);
   } finally {
     t.cleanup();
   }

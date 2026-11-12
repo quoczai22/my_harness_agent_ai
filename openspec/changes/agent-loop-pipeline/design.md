@@ -79,7 +79,9 @@ New:
 - Clone accepts `https://` URLs only.
 - Loop state, run worktrees and the agent config live in a per-user directory outside every repository (`$HARNESS_STATE_DIR`, else `$XDG_STATE_HOME/harness-atlas`, else `~/.local/state/harness-atlas`).
 - Before and after every agent, command and gate stage the Harness compares the imported repository's HEAD, branch and working-tree status; any change stops the run with the task blocked. Atlas chat metadata under `.continuity/harness/` is excluded.
-- A changed path that is a symlink pointing outside the worktree is reverted and counts as a failed round.
+- After every agent, command and gate stage, whatever its outcome, a changed path that is a symlink pointing outside the worktree is reverted and the stage counts as failed.
+- A run refuses to start when the state directory, and so its worktree, would sit inside the repository.
+- Loop state is keyed by the registry id and a hash of the repository path, so an id that later points to another repository does not inherit its runs.
 - `/api/loop/*` requires a loopback Host; POSTs also require the page's own Origin and a JSON body.
 - Repository build/test commands are the user's own configured strings and run with `sh -c` in the worktree.
 

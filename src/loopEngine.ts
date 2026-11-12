@@ -6,7 +6,7 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import {
   commandFor, loadAgentConfig, MAX_PROMPT_BYTES, parseVerdict, queryLocalModel, runProcess,
   type AgentConfig, type ProcessResult,
@@ -187,6 +187,8 @@ export class LoopEngine extends EventEmitter {
     const worktree = join(this.options.stateRoot, "worktrees", safeWorkspaceKey(workspaceId), id);
     mkdirSync(join(this.options.stateRoot, "worktrees", safeWorkspaceKey(workspaceId)), { recursive: true });
     const branch = `harness/${id}`;
+    const rel = relative(repoRoot, worktree);
+    if (!rel || (!rel.startsWith("..") && !isAbsolute(rel))) throw new Error("STATE_DIR_INSIDE_REPOSITORY");
     const { base } = createRunWorktree(repoRoot, worktree, branch);
     const run: LoopRun = {
       id, workspaceId, repoRoot, pipeline, branch, worktree, base,
@@ -349,6 +351,15 @@ export class LoopEngine extends EventEmitter {
         let outcome = stage.kind === "human"
           ? await this.humanStage(workspaceId, runId, handle, current, stage)
           : await this.runStage(workspaceId, this.getRun(workspaceId, runId), current, stage, handle, failedRounds);
+        if (guarded && !handle.controller.signal.aborted) {
+          // Whatever the stage's outcome, no symlink may point out of the worktree.
+          const escaping = changedFiles(run.worktree).map((file) => file.path).filter((path) => symlinkEscapes(run.worktree, path));
+          if (escaping.length) {
+            revertFiles(run.worktree, escaping);
+            const note = `Symlinks pointing outside the worktree are not allowed (reverted): ${escaping.join(", ")}`;
+            outcome = { ...outcome, passed: false, issues: outcome.issues ? `${note}\n\n${outcome.issues}` : note };
+          }
+        }
         if (guarded && !handle.controller.signal.aborted && repoFingerprint(run.repoRoot) !== repoBefore) {
           // The imported repository must only change through a merge the user makes.
           outcome = {
@@ -505,11 +516,6 @@ export class LoopEngine extends EventEmitter {
         return { passed: false, exitCode: agentResult.exitCode, outputTail: tail(agentResult.output), issues: `${agent} did not finish (${describeExit(agentResult)}).\n${tail(agentResult.output, 3_000)}` };
       }
       const changed = changedFiles(run.worktree).map((file) => file.path);
-      const escaping = changed.filter((path) => symlinkEscapes(run.worktree, path));
-      if (escaping.length) {
-        revertFiles(run.worktree, escaping);
-        return { passed: false, exitCode: 0, outputTail: tail(agentResult.output), issues: `Symlinks pointing outside the worktree are not allowed (reverted): ${escaping.join(", ")}` };
-      }
       const outOfScope = task.allowedFiles.length ? changed.filter((path) => !matchesAny(path, task.allowedFiles)) : [];
       if (outOfScope.length) {
         revertFiles(run.worktree, outOfScope);

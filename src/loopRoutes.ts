@@ -8,6 +8,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
+import { createHash } from "node:crypto";
 import { chatCommand, extractTaskProposals, runClaudeChat, TASK_PROPOSAL_INSTRUCTIONS } from "./claudeChat.js";
 import type { LoopEngine } from "./loopEngine.js";
 import type { LoopEvent } from "./loopStore.js";
@@ -58,6 +59,7 @@ const ERRORS: Record<string, [number, string]> = {
   CLONE_TARGET_EXISTS: [409, "A folder with that name already exists in the projects directory"],
   SESSION_NOT_FOUND: [404, "Session was not found in this workspace"],
   GIT_NOT_INSTALLED: [500, "Git is not installed"],
+  STATE_DIR_INSIDE_REPOSITORY: [400, "The Harness state directory is inside this repository. Point HARNESS_STATE_DIR somewhere outside it."],
 };
 
 function errorResponse(err: any): [number, string] {
@@ -108,7 +110,7 @@ export async function handleLoopRequest(req: IncomingMessage, res: ServerRespons
   }
   const route = url.pathname.slice("/api/loop/".length);
   const workspaceParam = url.searchParams.get("workspace");
-  const workspaceId = workspaceParam || "default";
+  const sessionWorkspaceId = workspaceParam || "default";
   const { engine } = ctx;
 
   try {
@@ -126,6 +128,8 @@ export async function handleLoopRequest(req: IncomingMessage, res: ServerRespons
     }
 
     const target = ctx.getTargetWorkspace(workspaceParam);
+    // Loop state belongs to a repository, not just to a registry id that could later point elsewhere.
+    const workspaceId = `${workspaceParam || "default"}-${createHash("sha256").update(target.root).digest("hex").slice(0, 10)}`;
 
     if (route === "state" && req.method === "GET") {
       const state = engine.store(workspaceId).read();
@@ -207,12 +211,12 @@ export async function handleLoopRequest(req: IncomingMessage, res: ServerRespons
         const propose = body.propose === true;
         const message = propose ? TASK_PROPOSAL_INSTRUCTIONS : String(body.message ?? "").trim().slice(0, 20_000);
         if (!message) { sendJson({ error: "Write a message first" }, 400); return true; }
-        const session = loadHarnessSessions(target.root, workspaceId).find((s) => s.id === sessionId);
+        const session = loadHarnessSessions(target.root, sessionWorkspaceId).find((s) => s.id === sessionId);
         if (!session) { sendJson({ error: "Session was not found in this workspace" }, 404); return true; }
         const config = engine.agentConfig();
         chatCommand(config, message, session.claudeSessionId);
         const createdAt = new Date().toISOString();
-        updateHarnessSession(target.root, workspaceId, sessionId, (current) => ({
+        updateHarnessSession(target.root, sessionWorkspaceId, sessionId, (current) => ({
           ...current,
           messages: [...(current.messages ?? []), { id: `user-${Date.now()}`, role: "user", content: propose ? "Chia thành task" : message, createdAt }],
         }));
@@ -223,7 +227,7 @@ export async function handleLoopRequest(req: IncomingMessage, res: ServerRespons
           if (!res.writableEnded) res.write(`${JSON.stringify(event)}\n`);
         });
         const proposals = propose && !result.error ? engine.addTasks(workspaceId, extractTaskProposals(result.text), "claude") : [];
-        updateHarnessSession(target.root, workspaceId, sessionId, (current) => ({
+        updateHarnessSession(target.root, sessionWorkspaceId, sessionId, (current) => ({
           ...current,
           claudeSessionId: result.sessionId ?? current.claudeSessionId,
           messages: [...(current.messages ?? []), {
